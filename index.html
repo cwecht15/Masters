@@ -418,6 +418,7 @@ footer {
           <th>Participant</th>
           <th class="sortable sort-asc" data-sort="pool-score">Best 4 Total</th>
           <th class="sortable" data-sort="pool-holes">Holes Left</th>
+          <th class="sortable" data-sort="pool-winpct">Win %</th>
           <th class="picks-cell">Picks (best 4 highlighted)</th>
         </tr>
       </thead>
@@ -550,6 +551,220 @@ const ENTRIES = [
 const TIER_LABELS = ["Tier 1","Tier 2","Tier 3","Tier 4","Tier 5","Tier 6"];
 const MISSED_CUT_ROUND_SCORE = 80;
 const PAR = 72;
+
+// ── GOLFER STRENGTH MODELS (derived from pre-tournament odds) ──
+// roundMean = expected per-round to-par, conditional on making cut
+// cutProb = implied probability of making the cut
+const GOLFER_MODEL = {
+  "Adam Scott": { roundMean: -0.427, cutProb: 0.75 },
+  "Akshay Bhatia": { roundMean: -0.463, cutProb: 0.7561 },
+  "Brian Harman": { roundMean: -0.023, cutProb: 0.6296 },
+  "Brooks Koepka": { roundMean: -0.589, cutProb: 0.7619 },
+  "Bryson DeChambeau": { roundMean: -1.195, cutProb: 0.8824 },
+  "Cameron Smith": { roundMean: -0.258, cutProb: 0.6774 },
+  "Cameron Young": { roundMean: -0.888, cutProb: 0.8305 },
+  "Chris Gotterup": { roundMean: -0.488, cutProb: 0.7619 },
+  "Corey Conners": { roundMean: -0.322, cutProb: 0.7222 },
+  "Gary Woodland": { roundMean: -0.224, cutProb: 0.6721 },
+  "Harris English": { roundMean: -0.232, cutProb: 0.7059 },
+  "Harry Hall": { roundMean: -0.087, cutProb: 0.6599 },
+  "Hideki Matsuyama": { roundMean: -0.65, cutProb: 0.8305 },
+  "J.J. Spaun": { roundMean: -0.34, cutProb: 0.7222 },
+  "Jacob Bridgeman": { roundMean: -0.271, cutProb: 0.7222 },
+  "Jake Knapp": { roundMean: -0.353, cutProb: 0.726 },
+  "Jason Day": { roundMean: -0.385, cutProb: 0.75 },
+  "Jon Rahm": { roundMean: -1.293, cutProb: 0.9091 },
+  "Jordan Spieth": { roundMean: -0.573, cutProb: 0.7778 },
+  "Justin Rose": { roundMean: -0.622, cutProb: 0.7727 },
+  "Keegan Bradley": { roundMean: -0.114, cutProb: 0.6667 },
+  "Kurt Kitayama": { roundMean: -0.243, cutProb: 0.7183 },
+  "Ludvig Aberg": { roundMean: -0.987, cutProb: 0.84 },
+  "Marco Penge": { roundMean: -0.116, cutProb: 0.6403 },
+  "Matt Fitzpatrick": { roundMean: -0.851, cutProb: 0.8462 },
+  "Maverick McNealy": { roundMean: -0.279, cutProb: 0.726 },
+  "Max Greyserman": { roundMean: 0.062, cutProb: 0.6154 },
+  "Max Homa": { roundMean: -0.083, cutProb: 0.6599 },
+  "Michael Kim": { roundMean: 0.076, cutProb: 0.6241 },
+  "Min Woo Lee": { roundMean: -0.595, cutProb: 0.8039 },
+  "Nicolai Hojgaard": { roundMean: -0.294, cutProb: 0.726 },
+  "Patrick Cantlay": { roundMean: -0.385, cutProb: 0.75 },
+  "Patrick Reed": { roundMean: -0.585, cutProb: 0.7727 },
+  "Rasmus Hojgaard": { roundMean: -0.106, cutProb: 0.6721 },
+  "Rickie Fowler": { roundMean: 1.5, cutProb: 0.45 },
+  "Robert MacIntyre": { roundMean: -0.66, cutProb: 0.8 },
+  "Rory McIlroy": { roundMean: -1.129, cutProb: 0.8824 },
+  "Sahith Theegala": { roundMean: 1.5, cutProb: 0.45 },
+  "Sam Burns": { roundMean: -0.379, cutProb: 0.7297 },
+  "Samuel Stevens": { roundMean: 0.02, cutProb: 0.6552 },
+  "Scottie Scheffler": { roundMean: -1.593, cutProb: 0.9333 },
+  "Sergio Garcia": { roundMean: 0.039, cutProb: 0.6063 },
+  "Shane Lowry": { roundMean: -0.367, cutProb: 0.7561 },
+  "Sungjae Im": { roundMean: -0.175, cutProb: 0.6875 },
+  "Tyrrell Hatton": { roundMean: -0.321, cutProb: 0.7183 },
+  "Viktor Hovland": { roundMean: -0.573, cutProb: 0.7561 },
+  "Xander Schauffele": { roundMean: -0.981, cutProb: 0.875 },
+};
+const DEFAULT_MODEL = { roundMean: 1.5, cutProb: 0.45 };
+const ROUND_STD = 1.75;
+const NUM_SIMS = 10000;
+
+// ── SIMULATION ENGINE ──
+function randomNormal(mean, std) {
+  const u1 = Math.random();
+  const u2 = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return mean + std * z;
+}
+
+function getGolferSimState(name) {
+  const g = getGolfer(name);
+  if (!g) {
+    return { currentToPar: 0, completedRounds: 0, holesIntoRound: 0, isCut: false };
+  }
+
+  const toPar = parseToPar(g.toPar) || 0;
+  const isCut = g.status === "cut";
+  const currentRound = scoresData.current_round || 1;
+
+  let completedRounds, holesIntoRound;
+  if (isCut) {
+    // Cut players: count their completed rounds from roundDisplays
+    const played = (g.roundDisplays || []).filter(r => r && r !== "-").length;
+    completedRounds = played;
+    holesIntoRound = 0;
+  } else if (g.thru === "F") {
+    // Finished current round
+    completedRounds = currentRound;
+    holesIntoRound = 0;
+  } else if (g.thru) {
+    const n = parseInt(g.thru);
+    if (!isNaN(n) && n > 0) {
+      completedRounds = currentRound - 1;
+      holesIntoRound = n;
+    } else {
+      // Tee time or not started
+      completedRounds = currentRound - 1;
+      holesIntoRound = 0;
+    }
+  } else {
+    // Not started current round
+    completedRounds = currentRound - 1;
+    holesIntoRound = 0;
+  }
+
+  return { currentToPar: toPar, completedRounds, holesIntoRound, isCut };
+}
+
+function simulateGolferFinal(state, model, cutHappened) {
+  const { currentToPar, completedRounds, holesIntoRound, isCut } = state;
+  const { roundMean, cutProb } = model;
+
+  // Already cut: fixed score
+  if (isCut) {
+    const missedRounds = 4 - completedRounds;
+    return currentToPar + missedRounds * 8;
+  }
+
+  let score = currentToPar;
+  let roundsFullyDone = completedRounds;
+
+  // Finish partial current round
+  if (holesIntoRound > 0 && holesIntoRound < 18) {
+    const holesLeft = 18 - holesIntoRound;
+    score += randomNormal(roundMean * (holesLeft / 18), ROUND_STD * Math.sqrt(holesLeft / 18));
+    roundsFullyDone++;
+  } else if (holesIntoRound === 0 && roundsFullyDone < 4) {
+    // Simulate next full round
+    score += randomNormal(roundMean, ROUND_STD);
+    roundsFullyDone++;
+  }
+
+  // Check cut after R2 if cut hasn't happened yet
+  if (!cutHappened && roundsFullyDone === 2) {
+    if (Math.random() > cutProb) {
+      // Missed cut: +8 for each remaining round
+      return score + (4 - 2) * 8;
+    }
+  }
+
+  // Simulate remaining full rounds
+  while (roundsFullyDone < 4) {
+    score += randomNormal(roundMean, ROUND_STD);
+    roundsFullyDone++;
+  }
+
+  return score;
+}
+
+let simResults = null;
+
+function runMonteCarloSimulation() {
+  // Collect unique golfers
+  const uniqueNames = new Set();
+  for (const entry of ENTRIES) {
+    for (const pick of entry.picks) uniqueNames.add(pick);
+  }
+  const golferNames = [...uniqueNames];
+  const golferIndex = {};
+  golferNames.forEach((name, i) => golferIndex[name] = i);
+
+  // Pre-compute sim states and models
+  const states = golferNames.map(getGolferSimState);
+  const models = golferNames.map(name => GOLFER_MODEL[name] || DEFAULT_MODEL);
+
+  // Detect if cut has happened
+  const cutHappened = golferNames.some(name => {
+    const g = getGolfer(name);
+    return g && g.status === "cut";
+  }) || (scoresData.current_round >= 3);
+
+  // Pre-compute entry golfer indices
+  const entryIndices = ENTRIES.map(e => e.picks.map(name => golferIndex[name]));
+
+  const winCounts = new Float64Array(ENTRIES.length);
+  const numGolfers = golferNames.length;
+
+  for (let sim = 0; sim < NUM_SIMS; sim++) {
+    // Simulate all golfers for this sim
+    const finals = new Float64Array(numGolfers);
+    for (let g = 0; g < numGolfers; g++) {
+      finals[g] = simulateGolferFinal(states[g], models[g], cutHappened);
+    }
+
+    // Find winner among participants
+    let bestScore = Infinity;
+    const bestIndices = [];
+
+    for (let p = 0; p < ENTRIES.length; p++) {
+      const indices = entryIndices[p];
+      // Get 6 scores, sort, take best 4
+      const scores = indices.map(i => finals[i]);
+      scores.sort((a, b) => a - b);
+      const total = scores[0] + scores[1] + scores[2] + scores[3];
+
+      if (total < bestScore - 0.001) {
+        bestScore = total;
+        bestIndices.length = 0;
+        bestIndices.push(p);
+      } else if (Math.abs(total - bestScore) < 0.001) {
+        bestIndices.push(p);
+      }
+    }
+
+    // Split win among ties
+    const share = 1.0 / bestIndices.length;
+    for (const idx of bestIndices) {
+      winCounts[idx] += share;
+    }
+  }
+
+  // Convert to probabilities
+  const results = new Map();
+  for (let p = 0; p < ENTRIES.length; p++) {
+    results.set(ENTRIES[p].name, winCounts[p] / NUM_SIMS);
+  }
+  return results;
+}
 
 // ── SCORES STATE ──
 let scoresData = { tournament_status: "pre_tournament", current_round: 0, last_updated: "", cut_line: null, golfers: {} };
@@ -740,6 +955,13 @@ function renderLeaderboard() {
   if (poolSort.key === "pool-holes") {
     const dir = poolSort.dir === "asc" ? 1 : -1;
     participants.sort((a, b) => dir * (a.holesRemaining - b.holesRemaining));
+  } else if (poolSort.key === "pool-winpct") {
+    const dir = poolSort.dir === "asc" ? 1 : -1;
+    participants.sort((a, b) => {
+      const aPct = simResults ? (simResults.get(a.name) || 0) : 0;
+      const bPct = simResults ? (simResults.get(b.name) || 0) : 0;
+      return dir * (aPct - bPct);
+    });
   } else if (poolSort.key === "pool-score") {
     if (poolSort.dir === "desc") participants.reverse();
   }
@@ -769,6 +991,10 @@ function renderLeaderboard() {
     const holesLeftTxt = scoresData.tournament_status === "pre_tournament"
       ? "&ndash;" : String(p.holesRemaining);
 
+    const winPct = simResults ? (simResults.get(p.name) || 0) : null;
+    const winPctTxt = winPct !== null ? (winPct * 100).toFixed(1) + "%" : "...";
+    const winPctClass = winPct && winPct >= 0.1 ? "score-under" : "";
+
     tr.innerHTML = `
       <td class="rank-cell ${rankClass}">${p.rank}</td>
       <td class="name-cell">${p.name}</td>
@@ -776,6 +1002,7 @@ function renderLeaderboard() {
         scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(p.best4Total)
       }</td>
       <td class="score-cell">${holesLeftTxt}</td>
+      <td class="score-cell ${winPctClass}" style="font-size:0.85rem">${winPctTxt}</td>
       <td class="picks-cell">${pickTags}</td>
     `;
     tbody.appendChild(tr);
@@ -1231,6 +1458,14 @@ function render() {
   renderMastersLeaderboard();
   renderEntries();
   renderGolfers();
+
+  // Run Monte Carlo simulation async to avoid blocking UI
+  setTimeout(() => {
+    console.time("Monte Carlo simulation");
+    simResults = runMonteCarloSimulation();
+    console.timeEnd("Monte Carlo simulation");
+    renderLeaderboard(); // re-render with win %
+  }, 0);
 }
 
 async function refresh() {
