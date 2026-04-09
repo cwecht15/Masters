@@ -142,6 +142,29 @@ header .subtitle {
 
 .leaderboard-table .name-cell { font-weight: bold; }
 
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 1.2rem;
+}
+
+th.sortable:hover { text-decoration: underline; }
+
+th.sortable::after {
+  content: "\25B4\25BE";
+  font-size: 0.6rem;
+  position: absolute;
+  right: 0.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.4;
+  letter-spacing: -2px;
+}
+
+th.sortable.sort-asc::after { content: "\25B2"; opacity: 0.9; font-size: 0.7rem; }
+th.sortable.sort-desc::after { content: "\25BC"; opacity: 0.9; font-size: 0.7rem; }
+
 .leaderboard-table .score-cell {
   text-align: center;
   font-weight: bold;
@@ -393,8 +416,8 @@ footer {
         <tr>
           <th>#</th>
           <th>Participant</th>
-          <th>Best 4 Total</th>
-          <th>Holes Left</th>
+          <th class="sortable sort-asc" data-sort="pool-score">Best 4 Total</th>
+          <th class="sortable" data-sort="pool-holes">Holes Left</th>
           <th class="picks-cell">Picks (best 4 highlighted)</th>
         </tr>
       </thead>
@@ -429,9 +452,10 @@ footer {
     <table class="golfer-table">
       <thead>
         <tr>
-          <th>Pos</th>
+          <th class="sortable sort-asc" data-sort="golfer-pos">Pos</th>
           <th>Golfer</th>
-          <th>To Par</th>
+          <th class="sortable" data-sort="golfer-score">To Par</th>
+          <th class="sortable" data-sort="golfer-holes">Holes Left</th>
           <th>R1</th>
           <th>R2</th>
           <th>R3</th>
@@ -687,9 +711,40 @@ function rankParticipants(participants) {
   return participants;
 }
 
+// ── SORT STATE ──
+let poolSort = { key: "pool-score", dir: "asc" };
+let golferSort = { key: "golfer-pos", dir: "asc" };
+
+function updateSortIndicators(tableSelector, sortState) {
+  document.querySelectorAll(`${tableSelector} th.sortable`).forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === sortState.key) {
+      th.classList.add(sortState.dir === "asc" ? "sort-asc" : "sort-desc");
+    }
+  });
+}
+
+function golferHolesLeft(g) {
+  const thru = g ? g.thru : null;
+  if (!thru || !g) return 18;
+  if (thru === "F") return 0;
+  const n = parseInt(thru);
+  return isNaN(n) ? 18 : (18 - n);
+}
+
 // ── RENDER ──
 function renderLeaderboard() {
   const participants = rankParticipants(ENTRIES.map(calcParticipant));
+
+  // Apply secondary sort if not default
+  if (poolSort.key === "pool-holes") {
+    const dir = poolSort.dir === "asc" ? 1 : -1;
+    participants.sort((a, b) => dir * (a.holesRemaining - b.holesRemaining));
+  } else if (poolSort.key === "pool-score") {
+    if (poolSort.dir === "desc") participants.reverse();
+  }
+
+  updateSortIndicators("#tab-leaderboard", poolSort);
   const tbody = document.getElementById("leaderboardBody");
   tbody.innerHTML = "";
 
@@ -763,29 +818,46 @@ function renderGolfers() {
     }
   }
 
-  const golfers = Object.keys(golferMap).map(name => ({
-    name,
-    total: golferTotalToPar(name),
-    posNum: golferPositionNum(name),
-    position: golferPosition(name),
-    roundDisplays: golferRoundDisplays(name),
-    owners: golferMap[name],
-    status: getGolfer(name)?.status || "unknown",
-    thru: getGolfer(name)?.thru || null,
-  }));
+  const golfers = Object.keys(golferMap).map(name => {
+    const gData = getGolfer(name);
+    return {
+      name,
+      total: golferTotalToPar(name),
+      posNum: golferPositionNum(name),
+      position: golferPosition(name),
+      roundDisplays: golferRoundDisplays(name),
+      owners: golferMap[name],
+      status: gData?.status || "unknown",
+      thru: gData?.thru || null,
+      holesLeft: golferHolesLeft(gData),
+    };
+  });
 
-  golfers.sort((a, b) => a.posNum - b.posNum || a.total - b.total);
+  // Apply sort
+  if (golferSort.key === "golfer-pos") {
+    golfers.sort((a, b) => a.posNum - b.posNum || a.total - b.total);
+    if (golferSort.dir === "desc") golfers.reverse();
+  } else if (golferSort.key === "golfer-score") {
+    const dir = golferSort.dir === "asc" ? 1 : -1;
+    golfers.sort((a, b) => dir * (a.total - b.total));
+  } else if (golferSort.key === "golfer-holes") {
+    const dir = golferSort.dir === "asc" ? 1 : -1;
+    golfers.sort((a, b) => dir * (a.holesLeft - b.holesLeft) || a.posNum - b.posNum);
+  }
 
+  updateSortIndicators("#tab-golfers", golferSort);
   const tbody = document.getElementById("golferBody");
   tbody.innerHTML = "";
 
   for (const g of golfers) {
     const tr = document.createElement("tr");
     const statusTxt = g.status === "cut" ? "MC" : g.status === "active" ? "Active" : "&ndash;";
+    const holesLeftTxt = scoresData.tournament_status === "pre_tournament" ? "&ndash;" : String(g.holesLeft);
     tr.innerHTML = `
       <td>${g.position || "&ndash;"}</td>
       <td><strong>${g.name}</strong></td>
       <td class="${scoreClass(g.total)}" style="font-weight:bold">${scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(g.total)}</td>
+      <td style="text-align:center">${holesLeftTxt}</td>
       <td>${formatRoundDisplay(g.roundDisplays[0])}</td>
       <td>${formatRoundDisplay(g.roundDisplays[1])}</td>
       <td>${formatRoundDisplay(g.roundDisplays[2])}</td>
@@ -863,6 +935,25 @@ document.querySelectorAll(".tab").forEach(tab => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     tab.classList.add("active");
     document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+  });
+});
+
+// ── SORT HANDLERS ──
+document.querySelectorAll("th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    const isPool = key.startsWith("pool-");
+    const sortState = isPool ? poolSort : golferSort;
+
+    if (sortState.key === key) {
+      sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+    } else {
+      sortState.key = key;
+      sortState.dir = "asc";
+    }
+
+    if (isPool) renderLeaderboard();
+    else renderGolfers();
   });
 });
 
