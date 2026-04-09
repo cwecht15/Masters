@@ -475,8 +475,8 @@ footer {
     <div style="background:var(--card-bg);border-radius:8px;padding:1rem;box-shadow:0 1px 4px rgba(0,0,0,0.1);margin-bottom:1rem">
       <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap">
         <strong style="margin-right:0.5rem">Show:</strong>
-        <button class="tab active" id="trendModeScore" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="setTrendMode('score')">Best 4 Total</button>
-        <button class="tab" id="trendModeWin" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="setTrendMode('win')">Win %</button>
+        <button class="trend-toggle active" id="trendModeScore" style="font-size:0.8rem;padding:0.3rem 0.75rem;cursor:pointer;border-radius:4px;border:1px solid var(--masters-green);background:var(--masters-green);color:white;font-family:inherit;font-weight:bold" onclick="setTrendMode('score')">Best 4 Total</button>
+        <button class="trend-toggle" id="trendModeWin" style="font-size:0.8rem;padding:0.3rem 0.75rem;cursor:pointer;border-radius:4px;border:1px solid var(--masters-green);background:var(--border);color:var(--text-muted);font-family:inherit;font-weight:bold" onclick="setTrendMode('win')">Win %</button>
         <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted)" id="trendInfo"></span>
       </div>
       <div style="position:relative;height:400px">
@@ -1143,8 +1143,12 @@ async function loadTrendHistory() {
 
 function setTrendMode(mode) {
   trendMode = mode;
-  document.getElementById("trendModeScore").classList.toggle("active", mode === "score");
-  document.getElementById("trendModeWin").classList.toggle("active", mode === "win");
+  const scoreBtn = document.getElementById("trendModeScore");
+  const winBtn = document.getElementById("trendModeWin");
+  scoreBtn.style.background = mode === "score" ? "var(--masters-green)" : "var(--border)";
+  scoreBtn.style.color = mode === "score" ? "white" : "var(--text-muted)";
+  winBtn.style.background = mode === "win" ? "var(--masters-green)" : "var(--border)";
+  winBtn.style.color = mode === "win" ? "white" : "var(--text-muted)";
   renderTrendChart();
 }
 
