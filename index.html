@@ -394,11 +394,7 @@ footer {
           <th>#</th>
           <th>Participant</th>
           <th>Best 4 Total</th>
-          <th>R1</th>
-          <th>R2</th>
-          <th>R3</th>
-          <th>R4</th>
-          <th class="picks-cell">Picks</th>
+          <th class="picks-cell">Picks (best 4 highlighted)</th>
         </tr>
       </thead>
       <tbody id="leaderboardBody"></tbody>
@@ -417,7 +413,6 @@ footer {
           <th>R2</th>
           <th>R3</th>
           <th>R4</th>
-          <th>Total</th>
           <th class="picks-cell">Rostered By</th>
         </tr>
       </thead>
@@ -538,42 +533,42 @@ function getGolfer(name) {
   return scoresData.golfers[name] || null;
 }
 
+function parseToPar(str) {
+  if (str === null || str === undefined || str === "-" || str === "") return null;
+  const s = String(str).trim().replace("E", "0");
+  const n = parseInt(s);
+  return isNaN(n) ? null : n;
+}
+
 function golferTotalToPar(name) {
   const g = getGolfer(name);
   if (!g) return 0;
 
-  // For missed cut players: use completed rounds + 80 for missed rounds
-  if (g.status === "cut") {
-    let total = 0;
-    const rounds = g.rounds || [];
-    for (const r of rounds) total += (r - PAR);
-    const missedRounds = 4 - rounds.length;
-    total += missedRounds * (MISSED_CUT_ROUND_SCORE - PAR);
-    return total;
+  // Use ESPN's live toPar field (accurate mid-round)
+  const espnTotal = parseToPar(g.toPar);
+  if (espnTotal !== null) {
+    // For cut players, add +8 per missed weekend round
+    if (g.status === "cut") {
+      const roundsPlayed = (g.roundDisplays || []).filter(r => r && r !== "-").length;
+      const missedRounds = 4 - roundsPlayed;
+      return espnTotal + missedRounds * (MISSED_CUT_ROUND_SCORE - PAR);
+    }
+    return espnTotal;
   }
 
-  // For active players: prefer ESPN's live toPar (includes mid-round holes)
-  if (g.toPar !== undefined && g.toPar !== null) {
-    const parsed = String(g.toPar).replace("E", "0");
-    const num = parseInt(parsed);
-    if (!isNaN(num)) return num;
-  }
-
-  // Fallback: sum completed rounds
-  let total = 0;
-  for (const r of (g.rounds || [])) total += (r - PAR);
-  return total;
+  return 0;
 }
 
-function golferRoundScores(name) {
+// Returns array of 4 display strings for round columns (to-par like "-3", "E", "+2")
+function golferRoundDisplays(name) {
   const g = getGolfer(name);
-  const rounds = g ? (g.rounds || []) : [];
+  const displays = g ? (g.roundDisplays || []) : [];
   const result = [];
   for (let i = 0; i < 4; i++) {
-    if (i < rounds.length) {
-      result.push(rounds[i]);
-    } else if (g && g.status === "cut") {
-      result.push(MISSED_CUT_ROUND_SCORE);
+    if (i < displays.length && displays[i] && displays[i] !== "-") {
+      result.push(displays[i]);
+    } else if (g && g.status === "cut" && i >= (displays.filter(d => d && d !== "-").length)) {
+      result.push("+8");
     } else {
       result.push(null);
     }
@@ -592,7 +587,7 @@ function golferPositionNum(name) {
   if (!pos) return 999;
   const g = getGolfer(name);
   if (g && g.status === "cut") return 998;
-  const n = parseInt(String(pos).replace("T", ""));
+  const n = parseInt(String(pos).replace("T", "").replace("MC", "998"));
   return isNaN(n) ? 999 : n;
 }
 
@@ -608,9 +603,9 @@ function scoreClass(toPar) {
   return "score-even";
 }
 
-function formatRound(score) {
-  if (score === null) return "&ndash;";
-  return String(score);
+function formatRoundDisplay(val) {
+  if (val === null || val === undefined) return "&ndash;";
+  return String(val);
 }
 
 // ── CALCULATE PARTICIPANT SCORES ──
@@ -620,22 +615,13 @@ function calcParticipant(entry) {
     tier: TIER_LABELS[i],
     total: golferTotalToPar(name),
     posNum: golferPositionNum(name),
-    rounds: golferRoundScores(name),
+    roundDisplays: golferRoundDisplays(name),
   }));
 
   // Sort by total (ascending = best first)
   const sorted = [...golferScores].sort((a, b) => a.total - b.total);
   const countingNames = new Set(sorted.slice(0, 4).map(g => g.name));
   const best4Total = sorted.slice(0, 4).reduce((s, g) => s + g.total, 0);
-
-  // Round-by-round totals for counting golfers only
-  const roundTotals = [0, 0, 0, 0];
-  for (const gs of golferScores) {
-    if (!countingNames.has(gs.name)) continue;
-    for (let r = 0; r < 4; r++) {
-      if (gs.rounds[r] !== null) roundTotals[r] += (gs.rounds[r] - PAR);
-    }
-  }
 
   // Tiebreaker: sorted positions of all 6 picks (ascending = best first)
   const tiebreaker = [...golferScores].sort((a, b) => a.posNum - b.posNum).map(g => g.posNum);
@@ -646,7 +632,6 @@ function calcParticipant(entry) {
     golferScores,
     countingNames,
     best4Total,
-    roundTotals,
     tiebreaker,
   };
 }
@@ -707,10 +692,6 @@ function renderLeaderboard() {
       <td class="score-cell ${scoreClass(p.best4Total)}">${
         scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(p.best4Total)
       }</td>
-      <td class="score-cell">${scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(p.roundTotals[0])}</td>
-      <td class="score-cell">${scoresData.current_round < 2 && scoresData.tournament_status !== "complete" ? "&ndash;" : formatScore(p.roundTotals[1])}</td>
-      <td class="score-cell">${scoresData.current_round < 3 && scoresData.tournament_status !== "complete" ? "&ndash;" : formatScore(p.roundTotals[2])}</td>
-      <td class="score-cell">${scoresData.current_round < 4 && scoresData.tournament_status !== "complete" ? "&ndash;" : formatScore(p.roundTotals[3])}</td>
       <td class="picks-cell">${pickTags}</td>
     `;
     tbody.appendChild(tr);
@@ -758,9 +739,10 @@ function renderGolfers() {
     total: golferTotalToPar(name),
     posNum: golferPositionNum(name),
     position: golferPosition(name),
-    rounds: golferRoundScores(name),
+    roundDisplays: golferRoundDisplays(name),
     owners: golferMap[name],
     status: getGolfer(name)?.status || "unknown",
+    thru: getGolfer(name)?.thru || null,
   }));
 
   golfers.sort((a, b) => a.posNum - b.posNum || a.total - b.total);
@@ -775,10 +757,10 @@ function renderGolfers() {
       <td>${g.position || "&ndash;"}</td>
       <td><strong>${g.name}</strong></td>
       <td class="${scoreClass(g.total)}" style="font-weight:bold">${scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(g.total)}</td>
-      <td>${formatRound(g.rounds[0])}</td>
-      <td>${formatRound(g.rounds[1])}</td>
-      <td>${formatRound(g.rounds[2])}</td>
-      <td>${formatRound(g.rounds[3])}</td>
+      <td>${formatRoundDisplay(g.roundDisplays[0])}</td>
+      <td>${formatRoundDisplay(g.roundDisplays[1])}</td>
+      <td>${formatRoundDisplay(g.roundDisplays[2])}</td>
+      <td>${formatRoundDisplay(g.roundDisplays[3])}</td>
       <td>${statusTxt}</td>
       <td class="owners-list">${g.owners.join(", ")}</td>
     `;
@@ -804,10 +786,10 @@ function showDetail(p) {
     return `<tr class="${cls}">
       <td>${gs.tier}</td>
       <td>${gs.name}</td>
-      <td>${formatRound(gs.rounds[0])}</td>
-      <td>${formatRound(gs.rounds[1])}</td>
-      <td>${formatRound(gs.rounds[2])}</td>
-      <td>${formatRound(gs.rounds[3])}</td>
+      <td>${formatRoundDisplay(gs.roundDisplays[0])}</td>
+      <td>${formatRoundDisplay(gs.roundDisplays[1])}</td>
+      <td>${formatRoundDisplay(gs.roundDisplays[2])}</td>
+      <td>${formatRoundDisplay(gs.roundDisplays[3])}</td>
       <td class="${scoreClass(gs.total)}" style="font-weight:bold">${scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(gs.total)}</td>
       <td>${statusTxt}</td>
     </tr>`;
@@ -949,13 +931,14 @@ async function fetchESPNScores() {
       const rawName = athlete.displayName || athlete.fullName || "";
       const name = normalizeESPNName(rawName);
 
-      // Parse round scores from linescores array
-      const rounds = [];
+      // Parse round display values (to-par strings) from linescores
+      const roundDisplays = [];
       const linescores = c.linescores || [];
       for (const ls of linescores) {
-        // value > 0 means the round has actual strokes; 0 or missing = not played
-        if (ls.value && ls.value > 0) {
-          rounds.push(Math.round(ls.value));
+        // displayValue has the to-par for that round (e.g., "-3", "E", "+2")
+        // "-" or missing means not played yet
+        if (ls.displayValue && ls.displayValue !== "-") {
+          roundDisplays.push(ls.displayValue);
         }
       }
 
@@ -1012,7 +995,7 @@ async function fetchESPNScores() {
       const golferData = {
         position,
         status: playerStatus,
-        rounds,
+        roundDisplays,
         toPar,
         thru,
       };
@@ -1030,7 +1013,7 @@ async function fetchESPNScores() {
         position,
         toPar,
         thru,
-        rounds,
+        roundDisplays,
         status: playerStatus,
         country: (athlete.flag || {}).alt || "",
       });
@@ -1086,18 +1069,15 @@ function renderMastersLeaderboard() {
       tr.style.opacity = "0.6";
     }
 
-    const totalStrokes = c.rounds.reduce((a, b) => a + b, 0);
-
     tr.innerHTML = `
       <td style="text-align:center;font-weight:bold">${c.position || "&ndash;"}</td>
       <td><strong>${c.name}</strong></td>
       <td class="score-cell ${scoreClass(toParNum)}">${c.toPar || "E"}</td>
       <td style="text-align:center">${c.thru || "&ndash;"}</td>
-      <td style="text-align:center">${c.rounds[0] || "&ndash;"}</td>
-      <td style="text-align:center">${c.rounds[1] || "&ndash;"}</td>
-      <td style="text-align:center">${c.rounds[2] || "&ndash;"}</td>
-      <td style="text-align:center">${c.rounds[3] || "&ndash;"}</td>
-      <td style="text-align:center;font-weight:bold">${totalStrokes || "&ndash;"}</td>
+      <td style="text-align:center">${c.roundDisplays[0] || "&ndash;"}</td>
+      <td style="text-align:center">${c.roundDisplays[1] || "&ndash;"}</td>
+      <td style="text-align:center">${c.roundDisplays[2] || "&ndash;"}</td>
+      <td style="text-align:center">${c.roundDisplays[3] || "&ndash;"}</td>
       <td class="picks-cell owners-list">${isRostered ? owners.join(", ") : ""}</td>
     `;
     tbody.appendChild(tr);
