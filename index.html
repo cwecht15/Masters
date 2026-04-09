@@ -814,22 +814,16 @@ function simulateGolferFinal(state, model, cutHappened) {
     const holesLeft = 18 - holesIntoRound;
     score += randomNormal(roundMean * (holesLeft / 18), ROUND_STD * Math.sqrt(holesLeft / 18));
     roundsFullyDone++;
-  } else if (holesIntoRound === 0 && roundsFullyDone < 4) {
-    // Simulate next full round
-    score += randomNormal(roundMean, ROUND_STD);
-    roundsFullyDone++;
   }
 
-  // Check cut after R2 if cut hasn't happened yet
-  if (!cutHappened && roundsFullyDone === 2) {
-    if (Math.random() > cutProb) {
-      // Missed cut: +8 for each remaining round
-      return score + (4 - 2) * 8;
-    }
-  }
-
-  // Simulate remaining full rounds
+  // Simulate remaining full rounds, checking cut after R2
   while (roundsFullyDone < 4) {
+    // Cut check: after round 2, before simulating round 3
+    if (!cutHappened && roundsFullyDone === 2) {
+      if (Math.random() > cutProb) {
+        return score + (4 - 2) * 8;
+      }
+    }
     score += randomNormal(roundMean, ROUND_STD);
     roundsFullyDone++;
   }
@@ -901,9 +895,13 @@ function runMonteCarloSimulation() {
 
   // Convert to probabilities
   const results = new Map();
+  let totalPct = 0;
   for (let p = 0; p < ENTRIES.length; p++) {
-    results.set(ENTRIES[p].name, winCounts[p] / NUM_SIMS);
+    const pct = winCounts[p] / NUM_SIMS;
+    results.set(ENTRIES[p].name, pct);
+    totalPct += pct;
   }
+  console.log(`Win % total: ${(totalPct * 100).toFixed(1)}% (should be ~100%)`);
   return results;
 }
 
