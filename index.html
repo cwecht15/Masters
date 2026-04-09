@@ -466,7 +466,7 @@ footer {
 </div>
 
 <footer>
-  Scores updated manually &mdash; check back throughout the tournament.
+  Live scores via ESPN &mdash; auto-refreshes every 2 minutes during play.
 </footer>
 
 <script>
@@ -798,14 +798,15 @@ function showDetail(p) {
 function updateStatusBar() {
   const bar = document.getElementById("statusBar");
   const s = scoresData;
+  const updated = s.last_updated ? new Date(s.last_updated).toLocaleString() : "";
+  const src = s.event_name ? " (via ESPN)" : "";
   if (s.tournament_status === "pre_tournament") {
     bar.textContent = "Tournament has not started \u2014 Picks are locked. Check back Thursday!";
   } else if (s.tournament_status === "complete") {
-    bar.textContent = "Tournament Complete \u2014 Final Results";
+    bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
     const roundName = ["", "Round 1", "Round 2", "Round 3", "Round 4"][s.current_round] || "";
-    const updated = s.last_updated ? new Date(s.last_updated).toLocaleString() : "";
-    bar.textContent = `${roundName} In Progress \u2014 Last updated: ${updated}`;
+    bar.textContent = `${roundName} In Progress${src} \u2014 Last updated: ${updated} (auto-refreshes every 2 min)`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
@@ -831,20 +832,220 @@ document.getElementById("modalOverlay").addEventListener("click", (e) => {
   }
 });
 
-// ── INIT ──
-async function init() {
-  try {
-    const resp = await fetch("scores.json?" + Date.now());
-    if (resp.ok) {
-      scoresData = await resp.json();
+// ── ESPN API INTEGRATION ──
+// The Masters tournament ID on ESPN changes yearly. We search for it dynamically.
+const ESPN_LEADERBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
+
+// Name normalization: ESPN names may differ slightly from pool entries
+const ESPN_NAME_MAP = {
+  "Ludvig Åberg": "Ludvig Aberg",
+  "Ludvig Aberg": "Ludvig Aberg",
+  "Robert MacIntyre": "Robert MacIntyre",
+  "Robert Macintyre": "Robert MacIntyre",
+  "Nicolai Højgaard": "Nicolai Hojgaard",
+  "Nicolai Hojgaard": "Nicolai Hojgaard",
+  "Rasmus Højgaard": "Rasmus Hojgaard",
+  "Rasmus Hojgaard": "Rasmus Hojgaard",
+  "Sungjae Im": "Sungjae Im",
+  "Sung-jae Im": "Sungjae Im",
+  "Sung-Jae Im": "Sungjae Im",
+  "Cam Smith": "Cameron Smith",
+  "Cameron Smith": "Cameron Smith",
+  "J.J. Spaun": "J.J. Spaun",
+  "J.J Spaun": "J.J. Spaun",
+  "Samuel Stevens": "Samuel Stevens",
+  "Sam Stevens": "Samuel Stevens",
+  "Nicolas Echavarria": "Nicolas Echavarria",
+  "Nico Echavarria": "Nicolas Echavarria",
+  "Matthew Fitzpatrick": "Matt Fitzpatrick",
+  "Matt Fitzpatrick": "Matt Fitzpatrick",
+  "Min Woo Lee": "Min Woo Lee",
+  "Minwoo Lee": "Min Woo Lee",
+  "Si Woo Kim": "Si Woo Kim",
+  "Si-Woo Kim": "Si Woo Kim",
+  "Sahith Theegala": "Sahith Theegala",
+  "Max Greyserman": "Max Greyserman",
+  "Jordan Speith": "Jordan Spieth",
+  "Jordan Spieth": "Jordan Spieth",
+};
+
+function normalizeESPNName(name) {
+  // Try direct map first
+  if (ESPN_NAME_MAP[name]) return ESPN_NAME_MAP[name];
+  // Try trimmed
+  const trimmed = name.trim();
+  if (ESPN_NAME_MAP[trimmed]) return ESPN_NAME_MAP[trimmed];
+  return trimmed;
+}
+
+// Collect all golfer names that our pool cares about
+function getPoolGolferNames() {
+  const names = new Set();
+  for (const entry of ENTRIES) {
+    for (const pick of entry.picks) {
+      names.add(pick);
     }
-  } catch (e) {
-    console.log("No scores.json found or failed to load, using defaults.");
   }
+  return names;
+}
+
+async function fetchESPNScores() {
+  try {
+    const resp = await fetch(ESPN_LEADERBOARD_URL + "?" + Date.now());
+    if (!resp.ok) throw new Error("ESPN API returned " + resp.status);
+    const data = await resp.json();
+
+    // Find the Masters event (look for "Masters" in the name, or just use the first/current event)
+    let event = null;
+    for (const ev of (data.events || [])) {
+      if (ev.name && ev.name.toLowerCase().includes("masters")) {
+        event = ev;
+        break;
+      }
+    }
+    // If no Masters found, try the first event (during Masters week it's usually the only one)
+    if (!event && data.events && data.events.length > 0) {
+      event = data.events[0];
+    }
+    if (!event) {
+      console.log("No Masters event found on ESPN. Tournament may not have started.");
+      return null;
+    }
+
+    // Determine tournament status
+    const competitions = event.competitions || [];
+    const competition = competitions[0];
+    if (!competition) return null;
+
+    const status = competition.status || {};
+    const statusType = status.type || {};
+    const state = statusType.state; // "pre", "in", "post"
+    const statusDetail = statusType.detail || "";
+
+    let tournamentStatus = "pre_tournament";
+    let currentRound = 0;
+
+    if (state === "pre") {
+      tournamentStatus = "pre_tournament";
+    } else if (state === "in") {
+      tournamentStatus = "in_progress";
+      currentRound = status.period || 1;
+    } else if (state === "post") {
+      tournamentStatus = "complete";
+      currentRound = 4;
+    }
+
+    // Parse golfer data
+    const golfers = {};
+    const competitors = competition.competitors || [];
+    const poolNames = getPoolGolferNames();
+
+    for (const c of competitors) {
+      const athlete = c.athlete || {};
+      const rawName = athlete.displayName || athlete.shortName || "";
+      const name = normalizeESPNName(rawName);
+
+      // Parse round scores
+      const rounds = [];
+      const linescores = c.linescores || [];
+      for (const ls of linescores) {
+        const val = ls.value;
+        if (val !== undefined && val !== null && !isNaN(val) && val > 0) {
+          rounds.push(val);
+        }
+      }
+
+      // Determine status
+      let playerStatus = "active";
+      const cStatus = (c.status || "").toLowerCase();
+      if (cStatus === "cut" || cStatus === "mc") {
+        playerStatus = "cut";
+      }
+      // Also check if the status text says "cut" or "MC"
+      const statusText = (c.statusText || "").toLowerCase();
+      if (statusText.includes("cut") || statusText === "mc") {
+        playerStatus = "cut";
+      }
+
+      // Position
+      let position = null;
+      if (c.order !== undefined) {
+        position = c.isTied ? ("T" + c.order) : String(c.order);
+      }
+      if (playerStatus === "cut") {
+        position = "MC";
+      }
+
+      golfers[name] = {
+        position,
+        status: playerStatus,
+        rounds,
+      };
+
+      // Also store under the raw ESPN name in case it matches differently
+      if (rawName !== name) {
+        golfers[rawName] = golfers[name];
+      }
+    }
+
+    return {
+      tournament_status: tournamentStatus,
+      current_round: currentRound,
+      last_updated: new Date().toISOString(),
+      cut_line: null,
+      golfers,
+      event_name: event.name || "The Masters",
+    };
+  } catch (e) {
+    console.error("Failed to fetch ESPN scores:", e);
+    return null;
+  }
+}
+
+// ── INIT & AUTO-REFRESH ──
+let refreshTimer = null;
+
+async function loadScores() {
+  // Try ESPN live data first
+  const espnData = await fetchESPNScores();
+  if (espnData && Object.keys(espnData.golfers).length > 0) {
+    scoresData = espnData;
+    console.log("Loaded live scores from ESPN:", espnData.tournament_status, "| Golfers:", Object.keys(espnData.golfers).length);
+  } else {
+    // Fall back to local scores.json
+    try {
+      const resp = await fetch("scores.json?" + Date.now());
+      if (resp.ok) {
+        scoresData = await resp.json();
+        console.log("Loaded scores from local scores.json (ESPN unavailable).");
+      }
+    } catch (e) {
+      console.log("No scores available, using defaults.");
+    }
+  }
+}
+
+function render() {
   updateStatusBar();
   renderLeaderboard();
   renderEntries();
   renderGolfers();
+}
+
+async function refresh() {
+  await loadScores();
+  render();
+}
+
+async function init() {
+  await refresh();
+
+  // Auto-refresh every 2 minutes during active tournament
+  refreshTimer = setInterval(async () => {
+    if (scoresData.tournament_status === "in_progress") {
+      await refresh();
+    }
+  }, 120000);
 }
 
 init();
