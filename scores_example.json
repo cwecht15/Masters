@@ -1,0 +1,18 @@
+{
+  "tournament_status": "in_progress",
+  "current_round": 2,
+  "last_updated": "2026-04-11T18:30:00Z",
+  "cut_line": "+4",
+  "golfers": {
+    "Scottie Scheffler": { "position": "1", "status": "active", "rounds": [66, 68] },
+    "Rory McIlroy": { "position": "T3", "status": "active", "rounds": [69, 67] },
+    "Jon Rahm": { "position": "T5", "status": "active", "rounds": [70, 68] },
+    "Xander Schauffele": { "position": "T10", "status": "active", "rounds": [71, 69] },
+    "Ludvig Aberg": { "position": "T8", "status": "active", "rounds": [68, 72] },
+    "Bryson DeChambeau": { "position": "T15", "status": "active", "rounds": [72, 70] },
+    "Patrick Cantlay": { "position": "T20", "status": "active", "rounds": [71, 73] },
+    "Shane Lowry": { "position": "T12", "status": "active", "rounds": [70, 71] },
+    "Gary Woodland": { "position": null, "status": "cut", "rounds": [78, 79] },
+    "Rickie Fowler": { "position": null, "status": "cut", "rounds": [77, 80] }
+  }
+}
