@@ -639,7 +639,8 @@ function loadCachedOdds() {
     if (data.model && data.timestamp) {
       liveOddsModel = data.model;
       lastOddsFetch = data.timestamp;
-      console.log(`Loaded cached odds from ${new Date(data.timestamp).toLocaleTimeString()} (age: ${Math.round((Date.now() - data.timestamp) / 60000)} min)`);
+      if (data.credits !== undefined) oddsCreditsRemaining = data.credits;
+      console.log(`Loaded cached odds from ${new Date(data.timestamp).toLocaleTimeString()} (age: ${Math.round((Date.now() - data.timestamp) / 60000)} min, credits: ${oddsCreditsRemaining})`);
     }
   } catch (e) { /* ignore */ }
 }
@@ -649,13 +650,12 @@ function saveCachedOdds() {
     localStorage.setItem("mastersPoolOdds", JSON.stringify({
       model: liveOddsModel,
       timestamp: lastOddsFetch,
+      credits: oddsCreditsRemaining,
     }));
   } catch (e) { /* ignore */ }
 }
 
-// Clear any stale live odds cache — using pre-tournament model only
-try { localStorage.removeItem("mastersPoolOdds"); } catch (e) { /* ignore */ }
-// loadCachedOdds(); // disabled — live odds API disabled
+loadCachedOdds();
 
 async function fetchLiveOdds() {
   try {
@@ -770,11 +770,16 @@ function normalizeOddsName(name) {
   return ODDS_NAME_MAP[trimmed] || trimmed;
 }
 
-// Get model for a golfer: pre-tournament odds > default
-// (live odds API disabled due to credit burn)
+// Get model for a golfer.
+// Always use pre-tournament roundMean for remaining-round ability — live ESPN
+// scores already capture current performance, so using live odds for roundMean
+// would double-count. Live odds only update cutProb (useful pre-cut).
 function getGolferModel(name) {
-  if (GOLFER_MODEL[name]) return GOLFER_MODEL[name];
-  return DEFAULT_MODEL;
+  const base = GOLFER_MODEL[name] || DEFAULT_MODEL;
+  if (liveOddsModel && liveOddsModel[name]) {
+    return { roundMean: base.roundMean, cutProb: liveOddsModel[name].cutProb };
+  }
+  return base;
 }
 
 // ── SIMULATION ENGINE ──
@@ -1316,7 +1321,8 @@ function updateStatusBar() {
     bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
     const detail = s.status_detail || ("Round " + s.current_round);
-    bar.textContent = `${detail}${src} \u2014 Updated: ${updated}`;
+    const oddsTime = lastOddsFetch ? " | Odds updated: " + new Date(lastOddsFetch).toLocaleTimeString() : "";
+    bar.textContent = `${detail}${src} \u2014 Updated: ${updated}${oddsTime}`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
@@ -1638,16 +1644,14 @@ function render() {
 async function refresh() {
   await loadScores();
 
-  // Live odds API disabled — burned through credits too fast.
-  // Using pre-tournament model (GOLFER_MODEL) which is verified correct.
-  // To re-enable: uncomment below and ensure localStorage caching works.
-  //
-  // const shouldFetchOdds = (Date.now() - lastOddsFetch) >= ODDS_REFRESH_MS
-  //   && scoresData.tournament_status !== "complete"
-  //   && (oddsCreditsRemaining === null || oddsCreditsRemaining > 20);
-  // if (shouldFetchOdds) {
-  //   await fetchLiveOdds();
-  // }
+  // Fetch live odds every 15 min (guarded by localStorage cache + credit check)
+  const oddsAge = Date.now() - lastOddsFetch;
+  const shouldFetchOdds = oddsAge >= ODDS_REFRESH_MS
+    && scoresData.tournament_status !== "complete"
+    && (oddsCreditsRemaining === null || oddsCreditsRemaining > 50);
+  if (shouldFetchOdds) {
+    await fetchLiveOdds();
+  }
 
   render();
 }
