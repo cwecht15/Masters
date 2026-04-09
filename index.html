@@ -380,7 +380,8 @@ footer {
 
 <div class="container">
   <div class="tabs">
-    <button class="tab active" data-tab="leaderboard">Leaderboard</button>
+    <button class="tab active" data-tab="leaderboard">Pool Leaderboard</button>
+    <button class="tab" data-tab="masters">Masters Leaderboard</button>
     <button class="tab" data-tab="entries">All Entries</button>
     <button class="tab" data-tab="golfers">Golfer Tracker</button>
     <button class="tab" data-tab="rules">Rules</button>
@@ -401,6 +402,26 @@ footer {
         </tr>
       </thead>
       <tbody id="leaderboardBody"></tbody>
+    </table>
+  </div>
+
+  <div class="tab-content" id="tab-masters">
+    <table class="leaderboard-table">
+      <thead>
+        <tr>
+          <th>Pos</th>
+          <th>Player</th>
+          <th>To Par</th>
+          <th>Thru</th>
+          <th>R1</th>
+          <th>R2</th>
+          <th>R3</th>
+          <th>R4</th>
+          <th>Total</th>
+          <th class="picks-cell">Rostered By</th>
+        </tr>
+      </thead>
+      <tbody id="mastersBody"></tbody>
     </table>
   </div>
 
@@ -520,15 +541,27 @@ function getGolfer(name) {
 function golferTotalToPar(name) {
   const g = getGolfer(name);
   if (!g) return 0;
-  let total = 0;
-  const rounds = g.rounds || [];
-  for (let i = 0; i < rounds.length; i++) {
-    total += (rounds[i] - PAR);
-  }
+
+  // For missed cut players: use completed rounds + 80 for missed rounds
   if (g.status === "cut") {
+    let total = 0;
+    const rounds = g.rounds || [];
+    for (const r of rounds) total += (r - PAR);
     const missedRounds = 4 - rounds.length;
     total += missedRounds * (MISSED_CUT_ROUND_SCORE - PAR);
+    return total;
   }
+
+  // For active players: prefer ESPN's live toPar (includes mid-round holes)
+  if (g.toPar !== undefined && g.toPar !== null) {
+    const parsed = String(g.toPar).replace("E", "0");
+    const num = parseInt(parsed);
+    if (!isNaN(num)) return num;
+  }
+
+  // Fallback: sum completed rounds
+  let total = 0;
+  for (const r of (g.rounds || [])) total += (r - PAR);
   return total;
 }
 
@@ -805,8 +838,8 @@ function updateStatusBar() {
   } else if (s.tournament_status === "complete") {
     bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
-    const roundName = ["", "Round 1", "Round 2", "Round 3", "Round 4"][s.current_round] || "";
-    bar.textContent = `${roundName} In Progress${src} \u2014 Last updated: ${updated} (auto-refreshes every 2 min)`;
+    const detail = s.status_detail || ("Round " + s.current_round);
+    bar.textContent = `${detail}${src} \u2014 Updated: ${updated} (auto-refreshes every 2 min)`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
@@ -833,61 +866,34 @@ document.getElementById("modalOverlay").addEventListener("click", (e) => {
 });
 
 // ── ESPN API INTEGRATION ──
-// The Masters tournament ID on ESPN changes yearly. We search for it dynamically.
 const ESPN_LEADERBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
 
-// Name normalization: ESPN names may differ slightly from pool entries
+// Name normalization: ESPN names may differ from pool entries
 const ESPN_NAME_MAP = {
   "Ludvig Åberg": "Ludvig Aberg",
-  "Ludvig Aberg": "Ludvig Aberg",
-  "Robert MacIntyre": "Robert MacIntyre",
   "Robert Macintyre": "Robert MacIntyre",
   "Nicolai Højgaard": "Nicolai Hojgaard",
-  "Nicolai Hojgaard": "Nicolai Hojgaard",
   "Rasmus Højgaard": "Rasmus Hojgaard",
-  "Rasmus Hojgaard": "Rasmus Hojgaard",
   "Sungjae Im": "Sungjae Im",
   "Sung-jae Im": "Sungjae Im",
   "Sung-Jae Im": "Sungjae Im",
   "Cam Smith": "Cameron Smith",
-  "Cameron Smith": "Cameron Smith",
-  "J.J. Spaun": "J.J. Spaun",
   "J.J Spaun": "J.J. Spaun",
-  "Samuel Stevens": "Samuel Stevens",
   "Sam Stevens": "Samuel Stevens",
-  "Nicolas Echavarria": "Nicolas Echavarria",
   "Nico Echavarria": "Nicolas Echavarria",
   "Matthew Fitzpatrick": "Matt Fitzpatrick",
-  "Matt Fitzpatrick": "Matt Fitzpatrick",
-  "Min Woo Lee": "Min Woo Lee",
   "Minwoo Lee": "Min Woo Lee",
-  "Si Woo Kim": "Si Woo Kim",
   "Si-Woo Kim": "Si Woo Kim",
-  "Sahith Theegala": "Sahith Theegala",
-  "Max Greyserman": "Max Greyserman",
   "Jordan Speith": "Jordan Spieth",
-  "Jordan Spieth": "Jordan Spieth",
 };
 
 function normalizeESPNName(name) {
-  // Try direct map first
-  if (ESPN_NAME_MAP[name]) return ESPN_NAME_MAP[name];
-  // Try trimmed
-  const trimmed = name.trim();
-  if (ESPN_NAME_MAP[trimmed]) return ESPN_NAME_MAP[trimmed];
-  return trimmed;
+  const trimmed = (name || "").trim();
+  return ESPN_NAME_MAP[trimmed] || trimmed;
 }
 
-// Collect all golfer names that our pool cares about
-function getPoolGolferNames() {
-  const names = new Set();
-  for (const entry of ENTRIES) {
-    for (const pick of entry.picks) {
-      names.add(pick);
-    }
-  }
-  return names;
-}
+// Store full ESPN competitor data for the Masters leaderboard tab
+let allCompetitors = [];
 
 async function fetchESPNScores() {
   try {
@@ -895,7 +901,7 @@ async function fetchESPNScores() {
     if (!resp.ok) throw new Error("ESPN API returned " + resp.status);
     const data = await resp.json();
 
-    // Find the Masters event (look for "Masters" in the name, or just use the first/current event)
+    // Find the Masters event
     let event = null;
     for (const ev of (data.events || [])) {
       if (ev.name && ev.name.toLowerCase().includes("masters")) {
@@ -903,18 +909,12 @@ async function fetchESPNScores() {
         break;
       }
     }
-    // If no Masters found, try the first event (during Masters week it's usually the only one)
     if (!event && data.events && data.events.length > 0) {
       event = data.events[0];
     }
-    if (!event) {
-      console.log("No Masters event found on ESPN. Tournament may not have started.");
-      return null;
-    }
+    if (!event) return null;
 
-    // Determine tournament status
-    const competitions = event.competitions || [];
-    const competition = competitions[0];
+    const competition = (event.competitions || [])[0];
     if (!competition) return null;
 
     const status = competition.status || {};
@@ -924,10 +924,7 @@ async function fetchESPNScores() {
 
     let tournamentStatus = "pre_tournament";
     let currentRound = 0;
-
-    if (state === "pre") {
-      tournamentStatus = "pre_tournament";
-    } else if (state === "in") {
+    if (state === "in") {
       tournamentStatus = "in_progress";
       currentRound = status.period || 1;
     } else if (state === "post") {
@@ -935,58 +932,112 @@ async function fetchESPNScores() {
       currentRound = 4;
     }
 
-    // Parse golfer data
-    const golfers = {};
+    // Count how many players share each order position to detect ties
     const competitors = competition.competitors || [];
-    const poolNames = getPoolGolferNames();
+    const orderCounts = {};
+    for (const c of competitors) {
+      if (c.order !== undefined) {
+        orderCounts[c.order] = (orderCounts[c.order] || 0) + 1;
+      }
+    }
+
+    const golfers = {};
+    allCompetitors = [];
 
     for (const c of competitors) {
       const athlete = c.athlete || {};
-      const rawName = athlete.displayName || athlete.shortName || "";
+      const rawName = athlete.displayName || athlete.fullName || "";
       const name = normalizeESPNName(rawName);
 
-      // Parse round scores
+      // Parse round scores from linescores array
       const rounds = [];
       const linescores = c.linescores || [];
       for (const ls of linescores) {
-        const val = ls.value;
-        if (val !== undefined && val !== null && !isNaN(val) && val > 0) {
-          rounds.push(val);
+        // value > 0 means the round has actual strokes; 0 or missing = not played
+        if (ls.value && ls.value > 0) {
+          rounds.push(Math.round(ls.value));
         }
       }
 
-      // Determine status
-      let playerStatus = "active";
-      const cStatus = (c.status || "").toLowerCase();
-      if (cStatus === "cut" || cStatus === "mc") {
-        playerStatus = "cut";
+      // Thru: how many holes completed in current round
+      let thru = null;
+      const currentRoundLS = linescores[currentRound - 1];
+      if (currentRoundLS) {
+        const holeScores = currentRoundLS.linescores || [];
+        if (holeScores.length > 0) {
+          // Count holes with actual scores
+          const holesPlayed = holeScores.filter(h => h.value !== undefined && h.value > 0).length;
+          thru = holesPlayed === 18 ? "F" : holesPlayed === 0 ? null : String(holesPlayed);
+        } else if (currentRoundLS.value && currentRoundLS.value > 0) {
+          thru = "F"; // Round complete
+        }
+        // Check for tee time (not started yet)
+        if (!thru && currentRoundLS.statistics) {
+          const stats = currentRoundLS.statistics;
+          const cats = stats.categories || [];
+          if (cats.length > 0) {
+            const teeTimeStat = (cats[0].stats || []).find(s =>
+              s.value && String(s.value).includes("2026")
+            );
+            if (teeTimeStat) {
+              const d = new Date(teeTimeStat.value);
+              if (!isNaN(d)) {
+                thru = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              }
+            }
+          }
+        }
       }
-      // Also check if the status text says "cut" or "MC"
-      const statusText = (c.statusText || "").toLowerCase();
-      if (statusText.includes("cut") || statusText === "mc") {
+
+      // Player status: check status.type.name for "cut"
+      let playerStatus = "active";
+      const cStatus = c.status || {};
+      const cStatusType = cStatus.type || {};
+      if (cStatusType.name && cStatusType.name.toLowerCase().includes("cut")) {
         playerStatus = "cut";
       }
 
-      // Position
+      // To-par: use the score field from ESPN directly
+      const toPar = c.score || null;
+
+      // Position with tie detection
       let position = null;
-      if (c.order !== undefined) {
-        position = c.isTied ? ("T" + c.order) : String(c.order);
-      }
       if (playerStatus === "cut") {
         position = "MC";
+      } else if (c.order !== undefined) {
+        const isTied = (orderCounts[c.order] || 0) > 1;
+        position = isTied ? ("T" + c.order) : String(c.order);
       }
 
-      golfers[name] = {
+      const golferData = {
         position,
         status: playerStatus,
         rounds,
+        toPar,
+        thru,
       };
 
-      // Also store under the raw ESPN name in case it matches differently
+      golfers[name] = golferData;
       if (rawName !== name) {
-        golfers[rawName] = golfers[name];
+        golfers[rawName] = golferData;
       }
+
+      // Store for full Masters leaderboard
+      allCompetitors.push({
+        name,
+        rawName,
+        order: c.order || 999,
+        position,
+        toPar,
+        thru,
+        rounds,
+        status: playerStatus,
+        country: (athlete.flag || {}).alt || "",
+      });
     }
+
+    // Sort full leaderboard by order
+    allCompetitors.sort((a, b) => a.order - b.order);
 
     return {
       tournament_status: tournamentStatus,
@@ -995,6 +1046,7 @@ async function fetchESPNScores() {
       cut_line: null,
       golfers,
       event_name: event.name || "The Masters",
+      status_detail: statusDetail,
     };
   } catch (e) {
     console.error("Failed to fetch ESPN scores:", e);
@@ -1002,17 +1054,65 @@ async function fetchESPNScores() {
   }
 }
 
+// ── RENDER MASTERS LEADERBOARD ──
+function renderMastersLeaderboard() {
+  const tbody = document.getElementById("mastersBody");
+  tbody.innerHTML = "";
+
+  if (allCompetitors.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem;color:var(--text-muted)">No tournament data available yet.</td></tr>';
+    return;
+  }
+
+  // Build roster lookup
+  const rosterMap = {};
+  for (const entry of ENTRIES) {
+    for (const pick of entry.picks) {
+      if (!rosterMap[pick]) rosterMap[pick] = [];
+      rosterMap[pick].push(entry.name);
+    }
+  }
+
+  for (const c of allCompetitors) {
+    const tr = document.createElement("tr");
+    const toParNum = c.toPar ? parseInt(String(c.toPar).replace("E", "0")) : 0;
+    const owners = rosterMap[c.name] || rosterMap[c.rawName] || [];
+    const isRostered = owners.length > 0;
+
+    if (isRostered) {
+      tr.style.background = "#f0f9f0";
+    }
+    if (c.status === "cut") {
+      tr.style.opacity = "0.6";
+    }
+
+    const totalStrokes = c.rounds.reduce((a, b) => a + b, 0);
+
+    tr.innerHTML = `
+      <td style="text-align:center;font-weight:bold">${c.position || "&ndash;"}</td>
+      <td><strong>${c.name}</strong></td>
+      <td class="score-cell ${scoreClass(toParNum)}">${c.toPar || "E"}</td>
+      <td style="text-align:center">${c.thru || "&ndash;"}</td>
+      <td style="text-align:center">${c.rounds[0] || "&ndash;"}</td>
+      <td style="text-align:center">${c.rounds[1] || "&ndash;"}</td>
+      <td style="text-align:center">${c.rounds[2] || "&ndash;"}</td>
+      <td style="text-align:center">${c.rounds[3] || "&ndash;"}</td>
+      <td style="text-align:center;font-weight:bold">${totalStrokes || "&ndash;"}</td>
+      <td class="picks-cell owners-list">${isRostered ? owners.join(", ") : ""}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
 // ── INIT & AUTO-REFRESH ──
 let refreshTimer = null;
 
 async function loadScores() {
-  // Try ESPN live data first
   const espnData = await fetchESPNScores();
   if (espnData && Object.keys(espnData.golfers).length > 0) {
     scoresData = espnData;
     console.log("Loaded live scores from ESPN:", espnData.tournament_status, "| Golfers:", Object.keys(espnData.golfers).length);
   } else {
-    // Fall back to local scores.json
     try {
       const resp = await fetch("scores.json?" + Date.now());
       if (resp.ok) {
@@ -1028,6 +1128,7 @@ async function loadScores() {
 function render() {
   updateStatusBar();
   renderLeaderboard();
+  renderMastersLeaderboard();
   renderEntries();
   renderGolfers();
 }
@@ -1040,11 +1141,9 @@ async function refresh() {
 async function init() {
   await refresh();
 
-  // Auto-refresh every 2 minutes during active tournament
+  // Auto-refresh every 2 minutes
   refreshTimer = setInterval(async () => {
-    if (scoresData.tournament_status === "in_progress") {
-      await refresh();
-    }
+    await refresh();
   }, 120000);
 }
 
