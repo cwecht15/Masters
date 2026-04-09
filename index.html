@@ -1115,7 +1115,6 @@ function rankParticipants(participants) {
 }
 
 // ── TREND HISTORY ──
-const TREND_STORAGE_KEY = "mastersPoolTrends";
 const TREND_COLORS = [
   "#e6194b","#3cb44b","#4363d8","#f58231","#911eb4",
   "#42d4f4","#f032e6","#bfef45","#fabebe","#469990",
@@ -1130,39 +1129,16 @@ let trendHistory = []; // Array of { time, scores: { name: best4Total }, winPcts
 let trendMode = "score"; // "score" or "win"
 let trendChart = null;
 
-function loadTrendHistory() {
+async function loadTrendHistory() {
   try {
-    const cached = localStorage.getItem(TREND_STORAGE_KEY);
-    if (cached) trendHistory = JSON.parse(cached);
-  } catch (e) { /* ignore */ }
-}
-
-function saveTrendHistory() {
-  try {
-    localStorage.setItem(TREND_STORAGE_KEY, JSON.stringify(trendHistory));
-  } catch (e) { /* ignore */ }
-}
-
-function recordSnapshot(participants) {
-  if (scoresData.tournament_status === "pre_tournament") return;
-
-  const now = Date.now();
-  // Don't record more than once per minute
-  if (trendHistory.length > 0 && (now - trendHistory[trendHistory.length - 1].time) < 60000) return;
-
-  const scores = {};
-  const winPcts = {};
-  for (const p of participants) {
-    scores[p.name] = p.best4Total;
-    winPcts[p.name] = simResults ? (simResults.get(p.name) || 0) : 0;
+    const resp = await fetch("history.json?" + Date.now());
+    if (resp.ok) {
+      trendHistory = await resp.json();
+      console.log(`Loaded ${trendHistory.length} trend data points from history.json`);
+    }
+  } catch (e) {
+    console.log("Could not load history.json");
   }
-
-  trendHistory.push({ time: now, scores, winPcts });
-
-  // Keep max 2000 data points (~3 days at 2-min intervals)
-  if (trendHistory.length > 2000) trendHistory = trendHistory.slice(-2000);
-
-  saveTrendHistory();
 }
 
 function setTrendMode(mode) {
@@ -1174,7 +1150,7 @@ function setTrendMode(mode) {
 
 function renderTrendChart() {
   if (trendHistory.length < 2) {
-    document.getElementById("trendInfo").textContent = "Chart will appear after a few data points are collected (refreshes every 2 min).";
+    document.getElementById("trendInfo").textContent = "Chart will appear after a few data points are collected (recorded every 5 min by server).";
     return;
   }
 
@@ -1268,8 +1244,6 @@ function renderTrendChart() {
     },
   });
 }
-
-loadTrendHistory();
 
 // ── SORT STATE ──
 let poolSort = { key: "pool-score", dir: "asc" };
@@ -1810,11 +1784,6 @@ function render() {
     console.time("Monte Carlo simulation");
     simResults = runMonteCarloSimulation();
     console.timeEnd("Monte Carlo simulation");
-
-    // Record snapshot for trend chart (after sim so win % is available)
-    const participants = rankParticipants(ENTRIES.map(calcParticipant));
-    recordSnapshot(participants);
-
     renderLeaderboard(); // re-render with win %
     renderTrendChart();
   }, 0);
@@ -1836,10 +1805,13 @@ async function refresh() {
 }
 
 async function init() {
+  await loadTrendHistory();
   await refresh();
 
   // Auto-refresh ESPN every 2 minutes (odds piggyback every 15 min)
+  // Also reload trend history from server on each refresh
   refreshTimer = setInterval(async () => {
+    await loadTrendHistory();
     await refresh();
   }, 120000);
 }
