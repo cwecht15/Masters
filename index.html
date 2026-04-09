@@ -394,6 +394,7 @@ footer {
           <th>#</th>
           <th>Participant</th>
           <th>Best 4 Total</th>
+          <th>Holes Left</th>
           <th class="picks-cell">Picks (best 4 highlighted)</th>
         </tr>
       </thead>
@@ -610,18 +611,40 @@ function formatRoundDisplay(val) {
 
 // ── CALCULATE PARTICIPANT SCORES ──
 function calcParticipant(entry) {
-  const golferScores = entry.picks.map((name, i) => ({
-    name,
-    tier: TIER_LABELS[i],
-    total: golferTotalToPar(name),
-    posNum: golferPositionNum(name),
-    roundDisplays: golferRoundDisplays(name),
-  }));
+  const golferScores = entry.picks.map((name, i) => {
+    const g = getGolfer(name);
+    const thru = g ? g.thru : null;
+    // Calculate holes remaining in current round
+    let holesLeft = null;
+    if (thru === "F" || thru === null) {
+      holesLeft = thru === "F" ? 0 : (g ? 18 : null);
+    } else {
+      const thruNum = parseInt(thru);
+      holesLeft = isNaN(thruNum) ? 18 : (18 - thruNum);
+    }
+    return {
+      name,
+      tier: TIER_LABELS[i],
+      total: golferTotalToPar(name),
+      posNum: golferPositionNum(name),
+      roundDisplays: golferRoundDisplays(name),
+      thru,
+      holesLeft,
+    };
+  });
 
   // Sort by total (ascending = best first)
   const sorted = [...golferScores].sort((a, b) => a.total - b.total);
   const countingNames = new Set(sorted.slice(0, 4).map(g => g.name));
   const best4Total = sorted.slice(0, 4).reduce((s, g) => s + g.total, 0);
+
+  // Holes remaining for counting golfers
+  let holesRemaining = 0;
+  for (const gs of golferScores) {
+    if (countingNames.has(gs.name) && gs.holesLeft !== null) {
+      holesRemaining += gs.holesLeft;
+    }
+  }
 
   // Tiebreaker: sorted positions of all 6 picks (ascending = best first)
   const tiebreaker = [...golferScores].sort((a, b) => a.posNum - b.posNum).map(g => g.posNum);
@@ -632,6 +655,7 @@ function calcParticipant(entry) {
     golferScores,
     countingNames,
     best4Total,
+    holesRemaining,
     tiebreaker,
   };
 }
@@ -681,10 +705,14 @@ function renderLeaderboard() {
       if (p.countingNames.has(gs.name)) cls += " counting";
       else cls += " dropped";
       if (g && g.status === "cut") cls = "pick-tag cut";
-      const scoreTxt = scoresData.tournament_status !== "pre_tournament"
-        ? ` (${formatScore(gs.total)})` : "";
-      return `<span class="${cls}">${gs.name}${scoreTxt}</span>`;
+      const live = scoresData.tournament_status !== "pre_tournament";
+      const scoreTxt = live ? ` (${formatScore(gs.total)})` : "";
+      const thruTxt = live && gs.thru && gs.thru !== "F" ? ` thru ${gs.thru}` : "";
+      return `<span class="${cls}">${gs.name}${scoreTxt}${thruTxt}</span>`;
     }).join(" ");
+
+    const holesLeftTxt = scoresData.tournament_status === "pre_tournament"
+      ? "&ndash;" : String(p.holesRemaining);
 
     tr.innerHTML = `
       <td class="rank-cell ${rankClass}">${p.rank}</td>
@@ -692,6 +720,7 @@ function renderLeaderboard() {
       <td class="score-cell ${scoreClass(p.best4Total)}">${
         scoresData.tournament_status === "pre_tournament" ? "&ndash;" : formatScore(p.best4Total)
       }</td>
+      <td class="score-cell">${holesLeftTxt}</td>
       <td class="picks-cell">${pickTags}</td>
     `;
     tbody.appendChild(tr);
