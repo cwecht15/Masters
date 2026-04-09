@@ -1173,21 +1173,34 @@ function renderTrendChart() {
     return (latest.winPcts[b] || 0) - (latest.winPcts[a] || 0);
   });
 
+  // Preserve user's show/hide selections from the existing chart
+  const prevVisibility = {};
+  if (trendChart) {
+    trendChart.data.datasets.forEach((ds, idx) => {
+      const meta = trendChart.getDatasetMeta(idx);
+      prevVisibility[ds.label] = meta.hidden;
+    });
+  }
+  const hasPrev = Object.keys(prevVisibility).length > 0;
+
   const datasets = ranked.map((name, i) => {
     const isTop10 = i < 10;
     const data = trendHistory.map(h => {
       if (trendMode === "score") return h.scores[name] ?? null;
       return h.winPcts[name] ? +(h.winPcts[name] * 100).toFixed(1) : 0;
     });
+    // Use previous visibility if user toggled, otherwise default to top 10
+    const defaultHidden = !isTop10;
+    const hidden = hasPrev ? (prevVisibility[name] ?? defaultHidden) : defaultHidden;
     return {
       label: name,
       data,
       borderColor: TREND_COLORS[i % TREND_COLORS.length],
       backgroundColor: TREND_COLORS[i % TREND_COLORS.length],
-      borderWidth: isTop10 ? 2.5 : 1,
+      borderWidth: hidden ? 1 : 2.5,
       pointRadius: 0,
       tension: 0.3,
-      hidden: !isTop10,
+      hidden,
     };
   });
 
