@@ -629,12 +629,12 @@ const ODDS_API_KEY = "38a804c40dc646b5f6dfacc27bbf8755";
 const ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/golf_masters_tournament_winner/odds";
 const ODDS_REFRESH_MS = 60 * 60 * 1000; // 1 hour
 
-// Log-linear mapping from implied win probability to per-round expected to-par.
-// Calibrated from pre-tournament odds: roundMean ≈ -0.47 * ln(p_win) - 2.45
-// Scheffler (16.4% → -1.59), Greyserman (0.5% → +0.06), long shots (0.2% → +0.87)
-function winProbToRoundMean(pWin) {
-  if (pWin <= 0.0001) return 2.0;
-  return -0.47 * Math.log(pWin) - 2.45;
+// Log-linear mapping from implied win probability to expected 4-round tournament to-par.
+// Calibrated from pre-tournament odds: expectedTotal ≈ 4 * (-0.47 * ln(p_win) - 2.45)
+// Scheffler (16.4% → -6.37), mid-field (1% → -1.06), long shots (0.1% → +3.23)
+function winProbToExpectedTotal(pWin) {
+  if (pWin <= 0.0001) return 8.0;
+  return 4 * (-0.47 * Math.log(pWin) - 2.45);
 }
 
 // Estimate cut probability from win probability
@@ -736,7 +736,7 @@ async function fetchLiveOdds() {
     for (const [name, rawProb] of Object.entries(golferProbs)) {
       const pWin = rawProb * vigFactor;
       newModel[name] = {
-        roundMean: winProbToRoundMean(pWin),
+        expectedTotal: winProbToExpectedTotal(pWin),
         cutProb: winProbToCutProb(pWin),
       };
     }
@@ -786,15 +786,44 @@ function normalizeOddsName(name) {
   return ODDS_NAME_MAP[trimmed] || trimmed;
 }
 
-// Get model for a golfer.
-// Always use pre-tournament roundMean for remaining-round ability — live ESPN
-// scores already capture current performance, so using live odds for roundMean
-// would double-count. Live odds only update cutProb (useful pre-cut).
+// Get model for a golfer, using live odds when available.
+// Live odds give us expectedTotal (4-round tournament to-par).
+// Subtract current ESPN score to get expected REMAINING to-par,
+// then divide by remaining rounds to get roundMean.
+// This avoids double-counting: ESPN = past, live odds = future.
 function getGolferModel(name) {
   const base = GOLFER_MODEL[name] || DEFAULT_MODEL;
+
   if (liveOddsModel && liveOddsModel[name]) {
-    return { roundMean: base.roundMean, cutProb: liveOddsModel[name].cutProb };
+    const live = liveOddsModel[name];
+    const g = getGolfer(name);
+    const currentToPar = g ? (parseToPar(g.toPar) || 0) : 0;
+
+    // Calculate remaining rounds (including partial current round)
+    const currentRound = scoresData.current_round || 1;
+    let remainingRounds = 4;
+    if (g) {
+      if (g.status === "cut") return { roundMean: base.roundMean, cutProb: live.cutProb };
+      if (g.thru === "F") {
+        remainingRounds = 4 - currentRound;
+      } else {
+        const thruHoles = g.thru ? parseInt(g.thru) : 0;
+        remainingRounds = (4 - currentRound) + (isNaN(thruHoles) ? 1 : (18 - thruHoles) / 18);
+      }
+    }
+
+    if (remainingRounds < 0.25) {
+      // Almost done — live odds are nearly deterministic, use base model
+      return { roundMean: base.roundMean, cutProb: live.cutProb };
+    }
+
+    const expectedRemaining = live.expectedTotal - currentToPar;
+    // Clamp roundMean to reasonable range [-4, +4] per round
+    const roundMean = Math.max(-4, Math.min(4, expectedRemaining / remainingRounds));
+
+    return { roundMean, cutProb: live.cutProb };
   }
+
   return base;
 }
 
