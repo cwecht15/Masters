@@ -1290,9 +1290,8 @@ function updateStatusBar() {
     bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
     const detail = s.status_detail || ("Round " + s.current_round);
-    const oddsInfo = liveOddsModel ? " | Live odds active" : "";
-    const creditsInfo = oddsCreditsRemaining !== null ? ` (${oddsCreditsRemaining} credits left)` : "";
-    bar.textContent = `${detail}${src}${oddsInfo}${creditsInfo} \u2014 Updated: ${updated}`;
+    const oddsTime = lastOddsFetch ? " | Win % updated: " + new Date(lastOddsFetch).toLocaleTimeString() : "";
+    bar.textContent = `${detail}${src} \u2014 Scores: ${updated}${oddsTime}`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
