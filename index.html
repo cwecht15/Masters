@@ -653,6 +653,13 @@ function loadCachedOdds() {
     if (!cached) return;
     const data = JSON.parse(cached);
     if (data.model && data.timestamp) {
+      // Validate format: must have expectedTotal (not old roundMean format)
+      const sampleKey = Object.keys(data.model)[0];
+      if (sampleKey && data.model[sampleKey].expectedTotal === undefined) {
+        console.log("Clearing stale odds cache (old format)");
+        localStorage.removeItem("mastersPoolOdds");
+        return;
+      }
       liveOddsModel = data.model;
       lastOddsFetch = data.timestamp;
       if (data.credits !== undefined) oddsCreditsRemaining = data.credits;
