@@ -627,7 +627,7 @@ const NUM_SIMS = 10000;
 // ── LIVE ODDS INTEGRATION (The Odds API) ──
 const ODDS_API_KEY = "38a804c40dc646b5f6dfacc27bbf8755";
 const ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/golf_masters_tournament_winner/odds";
-const ODDS_REFRESH_MS = 15 * 60 * 1000; // 15 minutes
+const ODDS_REFRESH_MS = 60 * 60 * 1000; // 1 hour
 
 // Log-linear mapping from implied win probability to per-round expected to-par.
 // Calibrated from pre-tournament odds: roundMean ≈ -0.47 * ln(p_win) - 2.45
