@@ -318,6 +318,14 @@ function runSimulation(espnData) {
 
 // ── MAIN ──
 async function main() {
+  // Only run during play hours (7am-8pm ET) to save Action minutes
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const hourET = nowET.getHours();
+  if (hourET < 7 || hourET >= 20) {
+    console.log(`Outside play hours (${hourET}:00 ET), skipping.`);
+    return;
+  }
+
   const espnData = await fetchESPN();
   if (!espnData || espnData.tournament_status === "pre_tournament") {
     console.log("Tournament not in progress, skipping.");

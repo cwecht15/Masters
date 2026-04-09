@@ -1859,9 +1859,14 @@ function render() {
 async function refresh() {
   await loadScores();
 
-  // Fetch live odds every 15 min (guarded by localStorage cache + credit check)
+  // Fetch live odds hourly, only during active play hours (7am-8pm ET)
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const hourET = nowET.getHours();
+  const duringPlayHours = hourET >= 7 && hourET < 20;
+
   const oddsAge = Date.now() - lastOddsFetch;
   const shouldFetchOdds = oddsAge >= ODDS_REFRESH_MS
+    && duringPlayHours
     && scoresData.tournament_status !== "complete"
     && (oddsCreditsRemaining === null || oddsCreditsRemaining > 50);
   if (shouldFetchOdds) {
