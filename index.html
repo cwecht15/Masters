@@ -653,7 +653,9 @@ function saveCachedOdds() {
   } catch (e) { /* ignore */ }
 }
 
-loadCachedOdds();
+// Clear any stale live odds cache — using pre-tournament model only
+try { localStorage.removeItem("mastersPoolOdds"); } catch (e) { /* ignore */ }
+// loadCachedOdds(); // disabled — live odds API disabled
 
 async function fetchLiveOdds() {
   try {
@@ -768,9 +770,9 @@ function normalizeOddsName(name) {
   return ODDS_NAME_MAP[trimmed] || trimmed;
 }
 
-// Get the best available model for a golfer: live odds > pre-tournament > default
+// Get model for a golfer: pre-tournament odds > default
+// (live odds API disabled due to credit burn)
 function getGolferModel(name) {
-  if (liveOddsModel && liveOddsModel[name]) return liveOddsModel[name];
   if (GOLFER_MODEL[name]) return GOLFER_MODEL[name];
   return DEFAULT_MODEL;
 }
@@ -1314,8 +1316,7 @@ function updateStatusBar() {
     bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
     const detail = s.status_detail || ("Round " + s.current_round);
-    const oddsTime = lastOddsFetch ? " | Win % updated: " + new Date(lastOddsFetch).toLocaleTimeString() : "";
-    bar.textContent = `${detail}${src} \u2014 Scores: ${updated}${oddsTime}`;
+    bar.textContent = `${detail}${src} \u2014 Updated: ${updated}`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
@@ -1637,13 +1638,16 @@ function render() {
 async function refresh() {
   await loadScores();
 
-  // Fetch live odds every 15 min (only during active tournament, and if credits remain)
-  const shouldFetchOdds = (Date.now() - lastOddsFetch) >= ODDS_REFRESH_MS
-    && scoresData.tournament_status !== "complete"
-    && (oddsCreditsRemaining === null || oddsCreditsRemaining > 20);
-  if (shouldFetchOdds) {
-    await fetchLiveOdds();
-  }
+  // Live odds API disabled — burned through credits too fast.
+  // Using pre-tournament model (GOLFER_MODEL) which is verified correct.
+  // To re-enable: uncomment below and ensure localStorage caching works.
+  //
+  // const shouldFetchOdds = (Date.now() - lastOddsFetch) >= ODDS_REFRESH_MS
+  //   && scoresData.tournament_status !== "complete"
+  //   && (oddsCreditsRemaining === null || oddsCreditsRemaining > 20);
+  // if (shouldFetchOdds) {
+  //   await fetchLiveOdds();
+  // }
 
   render();
 }
