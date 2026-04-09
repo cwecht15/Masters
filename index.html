@@ -630,6 +630,31 @@ let liveOddsModel = null; // Map<golferName, { roundMean, cutProb }>
 let oddsCreditsRemaining = null;
 let lastOddsFetch = 0;
 
+// Persist odds in localStorage to avoid burning credits on page refreshes
+function loadCachedOdds() {
+  try {
+    const cached = localStorage.getItem("mastersPoolOdds");
+    if (!cached) return;
+    const data = JSON.parse(cached);
+    if (data.model && data.timestamp) {
+      liveOddsModel = data.model;
+      lastOddsFetch = data.timestamp;
+      console.log(`Loaded cached odds from ${new Date(data.timestamp).toLocaleTimeString()} (age: ${Math.round((Date.now() - data.timestamp) / 60000)} min)`);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function saveCachedOdds() {
+  try {
+    localStorage.setItem("mastersPoolOdds", JSON.stringify({
+      model: liveOddsModel,
+      timestamp: lastOddsFetch,
+    }));
+  } catch (e) { /* ignore */ }
+}
+
+loadCachedOdds();
+
 async function fetchLiveOdds() {
   try {
     const url = `${ODDS_API_URL}?apiKey=${ODDS_API_KEY}&regions=us&markets=outrights&oddsFormat=american`;
@@ -700,6 +725,7 @@ async function fetchLiveOdds() {
 
     liveOddsModel = newModel;
     lastOddsFetch = Date.now();
+    saveCachedOdds();
     console.log(`Live odds loaded: ${Object.keys(newModel).length} golfers (vig factor: ${vigFactor.toFixed(3)})`);
   } catch (e) {
     console.error("Failed to fetch live odds:", e);
