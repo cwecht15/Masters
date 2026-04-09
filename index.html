@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>2026 Masters Pool</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
 :root {
   --masters-green: #006747;
@@ -407,6 +408,7 @@ footer {
     <button class="tab" data-tab="masters">Masters Leaderboard</button>
     <button class="tab" data-tab="entries">All Entries</button>
     <button class="tab" data-tab="golfers">Golfer Tracker</button>
+    <button class="tab" data-tab="trends">Trends</button>
     <button class="tab" data-tab="rules">Rules</button>
   </div>
 
@@ -467,6 +469,20 @@ footer {
       </thead>
       <tbody id="golferBody"></tbody>
     </table>
+  </div>
+
+  <div class="tab-content" id="tab-trends">
+    <div style="background:var(--card-bg);border-radius:8px;padding:1rem;box-shadow:0 1px 4px rgba(0,0,0,0.1);margin-bottom:1rem">
+      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap">
+        <strong style="margin-right:0.5rem">Show:</strong>
+        <button class="tab active" id="trendModeScore" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="setTrendMode('score')">Best 4 Total</button>
+        <button class="tab" id="trendModeWin" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="setTrendMode('win')">Win %</button>
+        <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted)" id="trendInfo"></span>
+      </div>
+      <div style="position:relative;height:400px">
+        <canvas id="trendChart"></canvas>
+      </div>
+    </div>
   </div>
 
   <div class="tab-content" id="tab-rules">
@@ -1098,6 +1114,163 @@ function rankParticipants(participants) {
   return participants;
 }
 
+// ── TREND HISTORY ──
+const TREND_STORAGE_KEY = "mastersPoolTrends";
+const TREND_COLORS = [
+  "#e6194b","#3cb44b","#4363d8","#f58231","#911eb4",
+  "#42d4f4","#f032e6","#bfef45","#fabebe","#469990",
+  "#e6beff","#9A6324","#800000","#aaffc3","#808000",
+  "#000075","#a9a9a9","#ffe119","#dcbeff","#ffd8b1",
+  "#fffac8","#ff6f61","#6b5b95","#88b04b","#f7cac9",
+  "#92a8d1","#955251","#b565a7","#009b77","#dd4124",
+  "#45b8ac","#5b5ea6",
+];
+
+let trendHistory = []; // Array of { time, scores: { name: best4Total }, winPcts: { name: pct } }
+let trendMode = "score"; // "score" or "win"
+let trendChart = null;
+
+function loadTrendHistory() {
+  try {
+    const cached = localStorage.getItem(TREND_STORAGE_KEY);
+    if (cached) trendHistory = JSON.parse(cached);
+  } catch (e) { /* ignore */ }
+}
+
+function saveTrendHistory() {
+  try {
+    localStorage.setItem(TREND_STORAGE_KEY, JSON.stringify(trendHistory));
+  } catch (e) { /* ignore */ }
+}
+
+function recordSnapshot(participants) {
+  if (scoresData.tournament_status === "pre_tournament") return;
+
+  const now = Date.now();
+  // Don't record more than once per minute
+  if (trendHistory.length > 0 && (now - trendHistory[trendHistory.length - 1].time) < 60000) return;
+
+  const scores = {};
+  const winPcts = {};
+  for (const p of participants) {
+    scores[p.name] = p.best4Total;
+    winPcts[p.name] = simResults ? (simResults.get(p.name) || 0) : 0;
+  }
+
+  trendHistory.push({ time: now, scores, winPcts });
+
+  // Keep max 2000 data points (~3 days at 2-min intervals)
+  if (trendHistory.length > 2000) trendHistory = trendHistory.slice(-2000);
+
+  saveTrendHistory();
+}
+
+function setTrendMode(mode) {
+  trendMode = mode;
+  document.getElementById("trendModeScore").classList.toggle("active", mode === "score");
+  document.getElementById("trendModeWin").classList.toggle("active", mode === "win");
+  renderTrendChart();
+}
+
+function renderTrendChart() {
+  if (trendHistory.length < 2) {
+    document.getElementById("trendInfo").textContent = "Chart will appear after a few data points are collected (refreshes every 2 min).";
+    return;
+  }
+
+  document.getElementById("trendInfo").textContent = `${trendHistory.length} data points since ${new Date(trendHistory[0].time).toLocaleString()}`;
+
+  const names = ENTRIES.map(e => e.name);
+  const labels = trendHistory.map(h => {
+    const d = new Date(h.time);
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  });
+
+  // Determine top participants by latest value for highlighting
+  const latest = trendHistory[trendHistory.length - 1];
+  const ranked = [...names].sort((a, b) => {
+    if (trendMode === "score") return (latest.scores[a] || 0) - (latest.scores[b] || 0);
+    return (latest.winPcts[b] || 0) - (latest.winPcts[a] || 0);
+  });
+
+  const datasets = ranked.map((name, i) => {
+    const isTop10 = i < 10;
+    const data = trendHistory.map(h => {
+      if (trendMode === "score") return h.scores[name] ?? null;
+      return h.winPcts[name] ? +(h.winPcts[name] * 100).toFixed(1) : 0;
+    });
+    return {
+      label: name,
+      data,
+      borderColor: TREND_COLORS[i % TREND_COLORS.length],
+      backgroundColor: TREND_COLORS[i % TREND_COLORS.length],
+      borderWidth: isTop10 ? 2.5 : 1,
+      pointRadius: 0,
+      tension: 0.3,
+      hidden: !isTop10,
+    };
+  });
+
+  const ctx = document.getElementById("trendChart").getContext("2d");
+
+  if (trendChart) trendChart.destroy();
+
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "nearest", intersect: false },
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { font: { size: 11 }, boxWidth: 12, padding: 8 },
+          onClick: function(e, legendItem, legend) {
+            const idx = legendItem.datasetIndex;
+            const meta = legend.chart.getDatasetMeta(idx);
+            meta.hidden = !meta.hidden;
+            legend.chart.update();
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              const val = ctx.parsed.y;
+              if (trendMode === "win") return `${ctx.dataset.label}: ${val.toFixed(1)}%`;
+              return `${ctx.dataset.label}: ${val > 0 ? "+" : ""}${val}`;
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          reverse: trendMode === "score",
+          title: {
+            display: true,
+            text: trendMode === "score" ? "Best 4 Total (to par)" : "Win %",
+            font: { weight: "bold" },
+          },
+          ticks: {
+            callback: function(val) {
+              if (trendMode === "win") return val + "%";
+              if (val > 0) return "+" + val;
+              if (val === 0) return "E";
+              return val;
+            },
+          },
+        },
+        x: {
+          title: { display: true, text: "Time", font: { weight: "bold" } },
+          ticks: { maxTicksLimit: 12 },
+        },
+      },
+    },
+  });
+}
+
+loadTrendHistory();
+
 // ── SORT STATE ──
 let poolSort = { key: "pool-score", dir: "asc" };
 let golferSort = { key: "golfer-pos", dir: "asc" };
@@ -1637,7 +1810,13 @@ function render() {
     console.time("Monte Carlo simulation");
     simResults = runMonteCarloSimulation();
     console.timeEnd("Monte Carlo simulation");
+
+    // Record snapshot for trend chart (after sim so win % is available)
+    const participants = rankParticipants(ENTRIES.map(calcParticipant));
+    recordSnapshot(participants);
+
     renderLeaderboard(); // re-render with win %
+    renderTrendChart();
   }, 0);
 }
 
