@@ -608,6 +608,147 @@ const DEFAULT_MODEL = { roundMean: 1.5, cutProb: 0.45 };
 const ROUND_STD = 1.75;
 const NUM_SIMS = 10000;
 
+// ── LIVE ODDS INTEGRATION (The Odds API) ──
+const ODDS_API_KEY = "38a804c40dc646b5f6dfacc27bbf8755";
+const ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/golf_masters_tournament_winner/odds";
+const ODDS_REFRESH_MS = 15 * 60 * 1000; // 15 minutes
+
+// Log-linear mapping from implied win probability to per-round expected to-par.
+// Calibrated from pre-tournament odds: roundMean ≈ -0.47 * ln(p_win) - 2.45
+// Scheffler (16.4% → -1.59), Greyserman (0.5% → +0.06), long shots (0.2% → +0.87)
+function winProbToRoundMean(pWin) {
+  if (pWin <= 0.0001) return 2.0;
+  return -0.47 * Math.log(pWin) - 2.45;
+}
+
+// Estimate cut probability from win probability
+function winProbToCutProb(pWin) {
+  return 0.5 + 0.45 * (1 - Math.exp(-50 * pWin));
+}
+
+let liveOddsModel = null; // Map<golferName, { roundMean, cutProb }>
+let oddsCreditsRemaining = null;
+let lastOddsFetch = 0;
+
+async function fetchLiveOdds() {
+  try {
+    const url = `${ODDS_API_URL}?apiKey=${ODDS_API_KEY}&regions=us&markets=outrights&oddsFormat=american`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.warn("Odds API returned", resp.status);
+      return;
+    }
+
+    // Track remaining credits
+    const remaining = resp.headers.get("x-requests-remaining");
+    if (remaining !== null) {
+      oddsCreditsRemaining = parseInt(remaining);
+      console.log(`Odds API credits remaining: ${oddsCreditsRemaining}`);
+    }
+
+    const data = await resp.json();
+    if (!data || !data.length) return;
+
+    // Find the Masters event
+    const event = data[0]; // Should be the Masters
+    const bookmakers = event.bookmakers || [];
+    if (!bookmakers.length) return;
+
+    // Collect all odds per golfer across bookmakers
+    const golferOdds = {};
+    for (const bk of bookmakers) {
+      for (const market of (bk.markets || [])) {
+        if (market.key !== "outrights") continue;
+        for (const outcome of (market.outcomes || [])) {
+          const name = normalizeOddsName(outcome.name);
+          if (!golferOdds[name]) golferOdds[name] = [];
+          golferOdds[name].push(outcome.price);
+        }
+      }
+    }
+
+    // Average odds per golfer → implied probability → model
+    const allProbs = [];
+    const golferProbs = {};
+
+    for (const [name, prices] of Object.entries(golferOdds)) {
+      // Average American odds across bookmakers
+      const avgOdds = prices.reduce((a, b) => a + b, 0) / prices.length;
+      // Convert to implied probability
+      let prob;
+      if (avgOdds > 0) {
+        prob = 100 / (avgOdds + 100);
+      } else {
+        prob = -avgOdds / (-avgOdds + 100);
+      }
+      golferProbs[name] = prob;
+      allProbs.push(prob);
+    }
+
+    // Remove vig: normalize so probs sum to 1
+    const totalProb = allProbs.reduce((a, b) => a + b, 0);
+    const vigFactor = totalProb > 0 ? 1.0 / totalProb : 1.0;
+
+    const newModel = {};
+    for (const [name, rawProb] of Object.entries(golferProbs)) {
+      const pWin = rawProb * vigFactor;
+      newModel[name] = {
+        roundMean: winProbToRoundMean(pWin),
+        cutProb: winProbToCutProb(pWin),
+      };
+    }
+
+    liveOddsModel = newModel;
+    lastOddsFetch = Date.now();
+    console.log(`Live odds loaded: ${Object.keys(newModel).length} golfers (vig factor: ${vigFactor.toFixed(3)})`);
+  } catch (e) {
+    console.error("Failed to fetch live odds:", e);
+  }
+}
+
+// Name normalization for Odds API names → pool entry names
+function normalizeOddsName(name) {
+  const trimmed = (name || "").trim();
+  // Reuse ESPN name map + add any Odds API specific variants
+  const ODDS_NAME_MAP = {
+    "Ludvig Åberg": "Ludvig Aberg",
+    "Ludvig Aberg": "Ludvig Aberg",
+    "Robert Macintyre": "Robert MacIntyre",
+    "Robert MacIntyre": "Robert MacIntyre",
+    "Nicolai Højgaard": "Nicolai Hojgaard",
+    "Nicolai Hojgaard": "Nicolai Hojgaard",
+    "Rasmus Højgaard": "Rasmus Hojgaard",
+    "Rasmus Hojgaard": "Rasmus Hojgaard",
+    "Sungjae Im": "Sungjae Im",
+    "Sung-jae Im": "Sungjae Im",
+    "Sung-Jae Im": "Sungjae Im",
+    "Cam Smith": "Cameron Smith",
+    "Cameron Smith": "Cameron Smith",
+    "J.J. Spaun": "J.J. Spaun",
+    "J.J Spaun": "J.J. Spaun",
+    "Sam Stevens": "Samuel Stevens",
+    "Samuel Stevens": "Samuel Stevens",
+    "Nico Echavarria": "Nicolas Echavarria",
+    "Nicolas Echavarria": "Nicolas Echavarria",
+    "Matthew Fitzpatrick": "Matt Fitzpatrick",
+    "Matt Fitzpatrick": "Matt Fitzpatrick",
+    "Minwoo Lee": "Min Woo Lee",
+    "Min Woo Lee": "Min Woo Lee",
+    "Si-Woo Kim": "Si Woo Kim",
+    "Si Woo Kim": "Si Woo Kim",
+    "Jordan Speith": "Jordan Spieth",
+    "Jordan Spieth": "Jordan Spieth",
+  };
+  return ODDS_NAME_MAP[trimmed] || trimmed;
+}
+
+// Get the best available model for a golfer: live odds > pre-tournament > default
+function getGolferModel(name) {
+  if (liveOddsModel && liveOddsModel[name]) return liveOddsModel[name];
+  if (GOLFER_MODEL[name]) return GOLFER_MODEL[name];
+  return DEFAULT_MODEL;
+}
+
 // ── SIMULATION ENGINE ──
 function randomNormal(mean, std) {
   const u1 = Math.random();
@@ -710,7 +851,7 @@ function runMonteCarloSimulation() {
 
   // Pre-compute sim states and models
   const states = golferNames.map(getGolferSimState);
-  const models = golferNames.map(name => GOLFER_MODEL[name] || DEFAULT_MODEL);
+  const models = golferNames.map(name => getGolferModel(name));
 
   // Detect if cut has happened
   const cutHappened = golferNames.some(name => {
@@ -1149,7 +1290,9 @@ function updateStatusBar() {
     bar.textContent = `Tournament Complete \u2014 Final Results${src}`;
   } else if (s.tournament_status === "in_progress") {
     const detail = s.status_detail || ("Round " + s.current_round);
-    bar.textContent = `${detail}${src} \u2014 Updated: ${updated} (auto-refreshes every 2 min)`;
+    const oddsInfo = liveOddsModel ? " | Live odds active" : "";
+    const creditsInfo = oddsCreditsRemaining !== null ? ` (${oddsCreditsRemaining} credits left)` : "";
+    bar.textContent = `${detail}${src}${oddsInfo}${creditsInfo} \u2014 Updated: ${updated}`;
   } else {
     bar.textContent = "2026 Masters Pool";
   }
@@ -1470,13 +1613,22 @@ function render() {
 
 async function refresh() {
   await loadScores();
+
+  // Fetch live odds every 15 min (only during active tournament, and if credits remain)
+  const shouldFetchOdds = (Date.now() - lastOddsFetch) >= ODDS_REFRESH_MS
+    && scoresData.tournament_status !== "complete"
+    && (oddsCreditsRemaining === null || oddsCreditsRemaining > 20);
+  if (shouldFetchOdds) {
+    await fetchLiveOdds();
+  }
+
   render();
 }
 
 async function init() {
   await refresh();
 
-  // Auto-refresh every 2 minutes
+  // Auto-refresh ESPN every 2 minutes (odds piggyback every 15 min)
   refreshTimer = setInterval(async () => {
     await refresh();
   }, 120000);
