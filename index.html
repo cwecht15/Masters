@@ -199,6 +199,21 @@ th.sortable.sort-desc::after { content: "\25BC"; opacity: 0.9; font-size: 0.7rem
 .pick-tag.cut { background: #ffcdd2; color: var(--cut-red); text-decoration: line-through; }
 .pick-tag.dropped { opacity: 0.5; }
 
+/* Projected cut line */
+.cut-line-row td {
+  border-top: 3px dashed var(--cut-red) !important;
+  border-bottom: none !important;
+  padding: 0.15rem 0.5rem !important;
+  background: #fff5f5 !important;
+}
+.cut-line-label {
+  color: var(--cut-red);
+  font-weight: bold;
+  font-size: 0.8rem;
+  font-style: italic;
+  letter-spacing: 0.5px;
+}
+
 /* Participant Detail Modal */
 .modal-overlay {
   display: none;
@@ -1771,13 +1786,36 @@ async function fetchESPNScores() {
   }
 }
 
+// ── PROJECTED CUT LINE ──
+// Returns the projected cut score (to-par number) based on top-50-and-ties rule.
+// During rounds 1-2, this is a projection. After the cut, ESPN marks players as "cut".
+function getProjectedCutLine() {
+  // If there's a manual override in scoresData, use it
+  if (scoresData.cut_line !== null && scoresData.cut_line !== undefined) {
+    return scoresData.cut_line;
+  }
+
+  // Only show projected cut line during or after rounds 1-2
+  const active = allCompetitors.filter(c => c.status !== "cut" && c.toPar !== null);
+  if (active.length === 0) return null;
+
+  // Parse all to-par scores and sort ascending
+  const scores = active.map(c => parseInt(String(c.toPar).replace("E", "0"))).filter(n => !isNaN(n));
+  scores.sort((a, b) => a - b);
+
+  if (scores.length <= 50) return null; // No cut needed
+
+  // Top 50 and ties: the score at position 50 (index 49) is the cut line
+  return scores[49];
+}
+
 // ── RENDER MASTERS LEADERBOARD ──
 function renderMastersLeaderboard() {
   const tbody = document.getElementById("mastersBody");
   tbody.innerHTML = "";
 
   if (allCompetitors.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem;color:var(--text-muted)">No tournament data available yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-muted)">No tournament data available yet.</td></tr>';
     return;
   }
 
@@ -1790,7 +1828,36 @@ function renderMastersLeaderboard() {
     }
   }
 
-  for (const c of allCompetitors) {
+  const projectedCut = getProjectedCutLine();
+  console.log("Projected cut line:", projectedCut, "| Competitors:", allCompetitors.length, "| Active w/ scores:", allCompetitors.filter(c => c.status !== "cut" && c.toPar !== null).length);
+  // Find the index where the cut line separator should be inserted
+  // (after the last player AT the cut line, before those below it)
+  let cutInsertIndex = -1;
+  if (projectedCut !== null) {
+    for (let i = 0; i < allCompetitors.length; i++) {
+      const c = allCompetitors[i];
+      if (c.status === "cut") continue; // already marked cut, skip
+      const score = c.toPar !== null ? parseInt(String(c.toPar).replace("E", "0")) : null;
+      if (score !== null && score <= projectedCut) {
+        cutInsertIndex = i; // keep updating — last player at or above the line
+      }
+    }
+  }
+
+  let cutLineInserted = false;
+
+  for (let i = 0; i < allCompetitors.length; i++) {
+    // Insert projected cut line separator after the last player at the cut score
+    if (!cutLineInserted && cutInsertIndex >= 0 && i === cutInsertIndex + 1) {
+      const cutTr = document.createElement("tr");
+      cutTr.className = "cut-line-row";
+      const cutLabel = projectedCut === 0 ? "E" : (projectedCut > 0 ? "+" + projectedCut : String(projectedCut));
+      cutTr.innerHTML = `<td colspan="9" class="cut-line-label">&#9986; Projected Cut Line: ${cutLabel} &nbsp;(Top 50 + Ties)</td>`;
+      tbody.appendChild(cutTr);
+      cutLineInserted = true;
+    }
+
+    const c = allCompetitors[i];
     const tr = document.createElement("tr");
     const toParNum = c.toPar ? parseInt(String(c.toPar).replace("E", "0")) : 0;
     const owners = rosterMap[c.name] || rosterMap[c.rawName] || [];
